@@ -17,6 +17,9 @@ npm run electron:build:linux      # Linux AppImage
 
 Output lands in `frontend/release/` (git-ignored).
 
+All three Windows targets build on Linux **once Wine is installed** — verified on
+Wine 11.14, including launching the packaged app and confirming it renders.
+
 ### Cross-building from Linux or macOS needs Wine
 
 electron-builder patches the `.exe` icon and version metadata with `rcedit`, and
@@ -78,6 +81,16 @@ fails with a CORS error in the console.
 ---
 
 ## What ships
+
+### Artifacts
+
+| File | Size | What it is |
+|---|---|---|
+| `DayFllow-Setup-1.0.0.exe` | ~79 MB | NSIS installer — user chooses the directory, creates shortcuts |
+| `DayFllow-Portable-1.0.0.exe` | ~79 MB | Single file, no install |
+| `DayFllow-1.0.0-x64.zip` | ~107 MB | Unpacked app, for unzip-and-run |
+
+### Inside the package
 
 | | |
 |---|---|
@@ -183,3 +196,10 @@ Wine, or on Windows, to get the real icon and metadata.
 
 **Stale content after an update.** Electron caches the renderer per app version.
 Bump `version` in `package.json` between builds.
+
+**User data is in a folder with the wrong name.** `app.getPath("userData")` comes
+from `app.getName()`, which prefers a **top-level** `productName` in
+`package.json` and falls back to `name`. With `productName` only under `build`,
+the packaged app wrote to `AppData\Roaming\vite_react_shadcn_ts` — the scaffold
+name — which is also where Chromium keeps `localStorage`, and therefore the
+session token. Both keys are now set at the top level.
