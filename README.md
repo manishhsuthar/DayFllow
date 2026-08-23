@@ -1,273 +1,181 @@
-# 🕒 DayFlow – Human Resource Management System (HRMS)
+# DayFlow
 
-DayFlow is a **modern, full‑stack Human Resource Management System (HRMS)** built to handle real‑world employee workflows such as **authentication, attendance tracking, leave management, and role‑based dashboards**.
+A multi-tenant HR platform — attendance, leave, payroll, expenses — sold as a
+subscription in USD.
 
-The project uses a **React.js frontend** and a **Django REST backend**, with PostgreSQL as the database. The primary focus of DayFlow is **correctness, security, and real HR logic**, not just UI-level CRUD operations.
-
----
-
-## 🚀 Project Vision
-
-Most HRMS demos focus on UI first and logic later. **DayFlow does the opposite.**
-
-The goal of this system is to:
-
-* Enforce **real HR policies**
-* Prevent **attendance and leave manipulation**
-* Maintain **data integrity and auditability**
-* Be **deployable in real organizations**, not just demo environments
-
-DayFlow is designed to feel **production‑ready**, even in a hackathon setting.
+Each customer is an **Organization**: an isolated tenant with its own employees,
+timezone, settings, billing and audit trail. New companies sign themselves up,
+get a 14-day trial, and pay through Stripe Checkout.
 
 ---
 
-## 🧱 Tech Stack
+## Status
 
-### Frontend
+This branch is a rebuild of an earlier hackathon codebase. Before the rebuild a
+full security review found **34 defects**, five of them critical — including an
+unauthenticated tenant takeover, a hardcoded login backdoor, and a paid tier that
+granted nothing. All 34 are fixed and covered by regression tests that fail if
+any of them return.
 
-* **React.js**
-* Axios for API communication
-* JWT-based authentication handling
-* Role‑based UI rendering (Admin / Employee)
-
-### Backend
-
-* **Django**
-* **Django REST Framework**
-* **PostgreSQL**
-* JWT Authentication
-* Role‑Based Access Control (RBAC)
-
-### Architecture
-
-* RESTful API architecture
-* Modular Django apps
-* Secure token‑based authentication
-* Clear separation of concerns
-
----
-
-## 🧩 System Modules
-
-### 1️⃣ Authentication & Authorization
-
-* Custom user model
-* User roles:
-
-  * `ADMIN`
-  * `HR`
-  * `EMPLOYEE`
-* JWT authentication (access & refresh tokens)
-* Forced password change for newly created employees
-* Secure password hashing
-
-**Why this matters:**
-This mirrors real enterprise onboarding and security practices.
-
----
-
-### 2️⃣ Employee Management
-
-* Admin/HR can create employees
-* System auto‑generates:
-
-  * Unique login ID
-  * Temporary password
-* Employees must change password on first login
-* Soft‑delete approach using `is_active` flag
-
-**Why this matters:**
-Employee records are never destroyed, preserving historical integrity.
-
----
-
-### 3️⃣ Attendance Management
-
-* Daily check‑in and check‑out
-* Attendance statuses:
-
-  * `PRESENT`
-  * `ABSENT`
-  * `LEAVE`
-* One attendance record per employee per day
-* Duplicate check‑ins prevented
-* Employees cannot check in on approved leave days
-
-**Business logic included:**
-
-* Prevents attendance manipulation
-* Enforces strict daily attendance rules
-
----
-
-### 4️⃣ Leave Management
-
-* Employees can apply for leave
-* Leave types:
-
-  * Casual
-  * Sick
-  * Paid
-* Leave statuses:
-
-  * Pending
-  * Approved
-  * Rejected
-* Admin/HR approval workflow
-* Approved leave automatically reflects in attendance
-* Overlapping leave requests are blocked
-
-**Why this matters:**
-Leave and attendance are tightly coupled, just like real HR systems.
-
----
-
-### 5️⃣ Dashboards
-
-#### 👤 Employee Dashboard
-
-* Today’s attendance status
-* Monthly present count
-* Monthly leave count
-* Pending leave requests
-
-#### 🧑‍💼 Admin / HR Dashboard
-
-* Total employees
-* Present today
-* Absent today
-* Employees on leave
-* Pending leave approvals
-
-Dashboards provide **decision‑ready summaries** instead of raw data.
-
----
-
-## 🔐 Security Features
-
-* JWT-based authentication
-* Token expiration handling
-* Role‑based API access control
-* No plain‑text passwords
-* Forced password rotation for new users
-* Backend‑level validation (not frontend‑dependent)
-
----
-
-## 🧠 Key Design Decisions
-
-* **Logic‑first development**: Core workflows before UI polish
-* **Guards & validations**: System blocks invalid or overlapping actions
-* **Audit‑ready mindset**: Data is preserved, not deleted
-* **Scalable architecture**: Modular apps for future growth
-
----
-
-## 🌐 API Overview
-
-### Authentication
+- Findings and reproductions: [`docs/SECURITY_AUDIT.md`](docs/SECURITY_AUDIT.md)
+- Fix status per finding: [`docs/FIX_LOG.md`](docs/FIX_LOG.md)
 
 ```
-POST /api/auth/login/
-POST /api/auth/refresh/
-POST /api/auth/change-password/
-POST /api/auth/create-employee/
+make test          # 124 backend tests + frontend typecheck
+make audit         # the security regression suite alone
 ```
 
-### Attendance
-
-```
-POST /api/attendance/check-in/
-POST /api/attendance/check-out/
-GET  /api/attendance/my/
-```
-
-### Leave
-
-```
-POST /api/leave/apply/
-GET  /api/leave/my/
-GET  /api/leave/all/
-POST /api/leave/action/<id>/
-```
-
-### Dashboard
-
-```
-GET /api/dashboard/employee/
-GET /api/dashboard/admin/
-```
+**One thing is still outstanding and cannot be fixed from the codebase:** the
+Razorpay API keys that were committed in plaintext are in Git history and must be
+rotated in the Razorpay dashboard. See [`docs/FIX_LOG.md`](docs/FIX_LOG.md).
 
 ---
 
-## 🛠️ Local Setup
+## Stack
 
-### Backend Setup
+| Layer | Choice | Why |
+|---|---|---|
+| API | Django 5.2 LTS + DRF | 4.2 is end-of-life and breaks on Python 3.14 |
+| Realtime | Channels + Redis | in-memory channels only work with one worker |
+| Database | PostgreSQL 16 | required, not optional — SQLite must be opted into |
+| Auth | SimpleJWT, 15-min access, rotating refresh | logout must actually revoke |
+| Billing | Stripe Checkout + webhooks | Stripe is the source of truth, not the browser |
+| Frontend | React 18, Vite, TypeScript, Tailwind, shadcn/ui | — |
+| Desktop | Electron (optional) | packaged shell around the same SPA |
+
+---
+
+## Quick start
 
 ```bash
-git clone <repository-url>
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver
+git clone <repository-url> && cd DayFllow
+make setup                 # venv + npm install, and creates backend/.env
+make migrate seed          # schema + the default USD plans
+make superuser             # optional, for /admin
 ```
 
-### Frontend Setup
+Then in two terminals:
 
 ```bash
-cd frontend
-npm install
-npm start
+make backend               # API -> http://localhost:8000
+make frontend              # app -> http://localhost:8080
 ```
 
----
+Open http://localhost:8080, click **Get Started**, and create a company. You are
+its owner, on a 14-day trial.
 
-## 🧪 Demo Flow (Recommended)
+Or run the whole stack, including Postgres and Redis:
 
-1. Admin logs in
-2. Admin creates an employee
-3. Employee logs in using temporary credentials
-4. Employee changes password
-5. Employee checks in
-6. Employee applies leave
-7. Admin approves leave
-8. Attendance auto‑updates
-9. Dashboards reflect real‑time data
+```bash
+make docker-up             # app -> http://localhost:8080
+```
+
+`make help` lists every command.
 
 ---
 
-## 🏆 Why DayFlow Stands Out
+## How it fits together
 
-✔ Not just CRUD operations
-✔ Real HR workflows
-✔ Strong backend validation
-✔ Security‑first design
-✔ Production‑deployable structure
+```
+                    ┌──────────────────┐
+  Browser ────────► │  React SPA       │
+  / Electron        │  (Vite, nginx)   │
+                    └────────┬─────────┘
+                             │ JWT over HTTPS  +  WebSocket
+                    ┌────────▼─────────┐
+                    │  Django + DRF    │◄──── Stripe webhooks
+                    │  Channels (ASGI) │      (signature-verified)
+                    └───┬─────────┬────┘
+                        │         │
+              ┌─────────▼──┐  ┌───▼────────┐
+              │ PostgreSQL │  │  Redis     │
+              └────────────┘  └────────────┘
+```
 
-> **“DayFlow is built to be correct before it is pretty.”**
-
----
-
-## 📌 Future Enhancements
-
-* Audit logs
-* Leave balance system
-* Attendance export (CSV / PDF)
-* Email notifications
-* Organization‑based multi‑tenancy
-
----
-
-## 👥 Team
-
-* Backend: Django + PostgreSQL
-* Frontend: React.js
-* System Design: Role‑based HR workflows
+Every tenant-scoped query filters on `Organization`. The full model and the
+reasoning behind it is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
-## 📜 License
+## Modules
 
-This project is developed for hackathon and educational purposes.
+**Organizations** — the tenant boundary. Name, slug, timezone, departments,
+roles, employment types, logo. Signup *creates* one and can never join one.
+
+**Accounts** — users, roles (`ADMIN`, `HR`, `EMP`, `INT`), invitations,
+password reset. ADMIN and HR are genuinely different: HR manages people, ADMIN
+moves money and changes settings.
+
+**Attendance** — check-in and check-out, resolved against the organization's own
+timezone. Hours grade to `PRESENT` / `HALF_DAY` / `ABSENT`.
+
+**Leave** — casual, sick and paid leave with an approval workflow. Ranges are
+bounded, and approval can never overwrite a day the employee actually worked.
+
+**Payroll** — monthly runs from attendance, salary slips, credits. Net pay is
+floored at zero; unrecovered expenses carry forward. A credited payslip is
+immutable.
+
+**Expenses** — claims with an approval workflow. Only approval moves money, and
+nobody reviews their own claim.
+
+**Billing** — plans, subscriptions, seat limits, Stripe Checkout and the customer
+portal. Entitlement is enforced server-side.
+
+**Audit** — an append-only record of every privileged and financial action, with
+before/after values. Readable by the organization owner.
+
+---
+
+## Plans
+
+| Plan | Price | Seats |
+|---|---|---|
+| Starter | $19 / month | 10 employees |
+| Growth | $49 / month | 50 employees |
+| Enterprise | $149 / month | Unlimited |
+
+Every plan includes every feature — you are buying capacity and support, not
+features. Seats count active non-admin employees; deactivating one frees it.
+Edit `backend/billing/management/commands/seed_plans.py` to change the lineup.
+
+A lapsed subscription blocks *creating new work*. It never blocks reading,
+exporting, or reaching billing: a customer whose card expired must still be able
+to see their payroll and fix their card.
+
+---
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Tenancy model, data model, request lifecycle, design decisions |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | Every environment variable and what breaks without it |
+| [API.md](docs/API.md) | Every endpoint, with request and response shapes |
+| [BILLING.md](docs/BILLING.md) | Stripe setup, webhooks, testing checkout, going live |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment and the pre-launch checklist |
+| [OPERATIONS.md](docs/OPERATIONS.md) | Runbook: backups, incidents, common failures |
+| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Conventions, workflow, how to add a tenant-scoped feature |
+| [SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) | All 34 findings with reproductions |
+| [FIX_LOG.md](docs/FIX_LOG.md) | Remediation status per finding |
+
+---
+
+## Testing
+
+```bash
+make test            # everything
+make test-backend    # 124 Django tests
+make audit           # security regressions only
+make typecheck       # frontend types
+make check           # Django checks + the deployment checklist
+```
+
+The security suite is organised one class per finding. A class whose docstring
+says *FIXED* asserts the secure behaviour and fails if the defect returns.
+
+---
+
+## License
+
+Developed for educational and hackathon purposes.
