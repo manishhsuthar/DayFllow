@@ -98,6 +98,12 @@ the proof the fix works and the alarm if it regresses. Then update the row in
 - **Vite inlines `VITE_*` at build time.** Changing the API origin needs a
   rebuild, and anything in a `VITE_` variable is public.
 - **List endpoints are paginated.** Frontend calls go through `unwrapList`.
+- **Building the Windows app from Linux needs Wine** for `rcedit` and the NSIS
+  uninstaller. Without it only the zip target builds — use
+  `npm run electron:build:win:zip`, which passes
+  `-c.win.signAndEditExecutable=false`.
+- **The desktop build needs `DJANGO_ALLOW_DESKTOP_ORIGIN=true`** on the backend;
+  it loads from `file://` and so sends `Origin: null`.
 
 ## Documentation
 
@@ -109,6 +115,7 @@ the proof the fix works and the alarm if it regresses. Then update the row in
 | `docs/BILLING.md` | Stripe setup and troubleshooting |
 | `docs/DEPLOYMENT.md` | Production deployment + pre-launch checklist |
 | `docs/OPERATIONS.md` | Runbook |
+| `docs/DESKTOP.md` | Electron build, and the Wine requirement when cross-building |
 | `docs/CONTRIBUTING.md` | Conventions and workflow |
 | `docs/SECURITY_AUDIT.md` | All 34 findings with reproductions |
 | `docs/FIX_LOG.md` | Remediation status |

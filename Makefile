@@ -20,7 +20,8 @@ DEV_ENV := DJANGO_DEBUG=true \
 .DEFAULT_GOAL := help
 .PHONY: help setup setup-backend setup-frontend migrate makemigrations seed \
         superuser backend frontend dev test test-backend test-frontend \
-        typecheck lint audit check build clean docker-up docker-down
+        typecheck lint audit check build desktop-win desktop-win-zip desktop-linux \
+        clean docker-up docker-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -91,6 +92,15 @@ check: ## Django system checks, including the deployment checklist
 
 build: ## Build the production frontend bundle
 	cd frontend && npm run build
+
+desktop-win: ## Build the Windows desktop app (installer + portable + zip; needs Wine on Linux)
+	cd frontend && npm run electron:build:win
+
+desktop-win-zip: ## Build the Windows desktop app, zip only (no Wine required)
+	cd frontend && npm run electron:build:win:zip
+
+desktop-linux: ## Build the Linux AppImage
+	cd frontend && npm run electron:build:linux
 
 # ---- docker ----------------------------------------------------------------
 

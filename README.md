@@ -72,6 +72,17 @@ make docker-up             # app -> http://localhost:8080
 
 `make help` lists every command.
 
+### Desktop app
+
+```bash
+make desktop-win-zip       # Windows, zip -- no Wine needed
+make desktop-win           # Windows, installer + portable + zip (needs Wine on Linux)
+```
+
+Set the API URL in `frontend/.env.desktop` first, and enable
+`DJANGO_ALLOW_DESKTOP_ORIGIN=true` on the backend — the app loads from `file://`
+and sends `Origin: null`. See [DESKTOP.md](docs/DESKTOP.md).
+
 ---
 
 ## How it fits together
@@ -155,6 +166,7 @@ to see their payroll and fix their card.
 | [BILLING.md](docs/BILLING.md) | Stripe setup, webhooks, testing checkout, going live |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment and the pre-launch checklist |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Runbook: backups, incidents, common failures |
+| [DESKTOP.md](docs/DESKTOP.md) | Electron build for Windows and Linux |
 | [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Conventions, workflow, how to add a tenant-scoped feature |
 | [SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) | All 34 findings with reproductions |
 | [FIX_LOG.md](docs/FIX_LOG.md) | Remediation status per finding |
