@@ -1,12 +1,31 @@
-Django==4.2
+# ---- Core framework -------------------------------------------------------
+# Django 5.2 is the current LTS (security support to Apr 2028). The previous
+# pin, Django 4.2, went end-of-life in April 2026 and additionally crashes on
+# Python 3.14 inside its own error handler. See docs/SECURITY_AUDIT.md V-14.
+Django==5.2.17
+djangorestframework==3.18.0
+djangorestframework-simplejwt==5.5.1
+
+# ---- ASGI / realtime ------------------------------------------------------
 channels==4.3.2
+channels-redis==4.3.0
 daphne==4.2.1
-djangorestframework==3.14.0
-psycopg==3.3.2
-python-dotenv==1.0.1
-django-cors-headers==4.3.1
-djangorestframework-simplejwt==5.3.1
-openpyxl==3.1.5
-dj-database-url==0.5.0
+
+# ---- Database -------------------------------------------------------------
+# Postgres is required, not optional: see docs/SECURITY_AUDIT.md V-13.
+psycopg[binary]==3.3.4
+dj-database-url==3.1.2
+
+# ---- Billing --------------------------------------------------------------
+stripe==15.5.1
+
+# ---- HTTP / serving -------------------------------------------------------
+django-cors-headers==4.9.0
+whitenoise==6.12.0
 gunicorn==23.0.0
-setuptools
+uvicorn[standard]==0.42.0
+
+# ---- Utilities ------------------------------------------------------------
+python-dotenv==1.0.1
+openpyxl==3.1.5
+argon2-cffi==25.1.0

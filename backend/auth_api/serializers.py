@@ -6,7 +6,6 @@ from accounts.utils import generate_login_id, generate_temp_password
 from accounts.company_table_service import insert_company_user_row
 from django.contrib.auth.hashers import make_password
 from django.db import transaction
-from django.conf import settings
 from accounts.models import CompanyConfig
 
 class LoginSerializer(serializers.Serializer):
@@ -19,22 +18,6 @@ class LoginSerializer(serializers.Serializer):
             user_by_email = CustomUser.objects.filter(email=login_input).first()
             if user_by_email:
                 data["login_id"] = user_by_email.login_id
-
-        # Development-only backdoor: accept specific credentials as admin
-        if (
-            settings.DEBUG
-            and data.get("login_id") == "admin1@gmail.com"
-            and data.get("password") == "adminisadmin"
-        ):
-            user = CustomUser.objects.filter(email=data.get("login_id")).first()
-            if not user:
-                user = CustomUser.objects.create_superuser(
-                    email=data.get("login_id"),
-                    password=data.get("password"),
-                )
-
-            data["user"] = user
-            return data
 
         user = authenticate(
             username=data["login_id"],

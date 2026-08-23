@@ -4,12 +4,15 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 from .serializers import LoginSerializer
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from .serializers import ChangePasswordSerializer
-from rest_framework.permissions import IsAuthenticated
 from .serializers import CreateEmployeeSerializer
 
+
 class LoginAPIView(APIView):
+    permission_classes = [AllowAny]
+    throttle_scope = "login"
+
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

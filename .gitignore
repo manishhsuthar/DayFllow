@@ -18,4 +18,7 @@ __pycache__/
 *.pyd
 .agents
 .github/workflows/build.yml
-.vscode
+.vscodestaticfiles/
+.venv/
+backend/db.sqlite3
+*.sqlite3

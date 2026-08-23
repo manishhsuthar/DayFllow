@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -24,7 +26,8 @@ from .company_table_service import (
     insert_company_user_row,
     delete_company_user_row,
 )
-import traceback
+
+logger = logging.getLogger(__name__)
 
 
 def get_employee_queryset_for_request(request):
@@ -51,6 +54,7 @@ def get_employee_queryset_for_request(request):
 class UserRegistrationView(generics.CreateAPIView):
     serializer_class = UserRegistrationSerializer
     permission_classes = (AllowAny,)
+    throttle_scope = "signup"
 
     def create(self, request, *args, **kwargs):
         try:
@@ -71,13 +75,12 @@ class UserRegistrationView(generics.CreateAPIView):
                     user=user,
                     created_by_user_id=None,
                 )
-        except Exception as e:
-            # In development return the exception message and traceback to help debugging
-            tb = traceback.format_exc()
-            return Response({
-                "detail": str(e),
-                "traceback": tb,
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            # Let core.exceptions.exception_handler log this with a correlation id
+            # and return an opaque error. Returning the traceback disclosed absolute
+            # paths, the dependency tree and SQL fragments to anonymous callers.
+            logger.exception("Company registration failed")
+            raise
         return Response(
             {
                 "user": UserRegistrationSerializer(
@@ -120,6 +123,7 @@ class EmployeeDetailAPIView(generics.RetrieveDestroyAPIView):
 
 class EmployeeExportAPIView(APIView):
     permission_classes = (IsAuthenticated,)
+    throttle_scope = "export"
 
     def get(self, request):
         queryset = get_employee_queryset_for_request(request)
@@ -262,6 +266,7 @@ PLAN_AMOUNTS = {
 
 class RazorpayCreateOrderAPIView(APIView):
     permission_classes = (AllowAny,)
+    throttle_scope = "billing"
 
     def post(self, request):
         plan = request.data.get("plan")
@@ -316,6 +321,7 @@ class RazorpayCreateOrderAPIView(APIView):
 
 class RazorpayVerifyPaymentAPIView(APIView):
     permission_classes = (AllowAny,)
+    throttle_scope = "billing"
 
     def post(self, request):
         order_id = request.data.get("razorpay_order_id", "")

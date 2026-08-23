@@ -9,8 +9,10 @@ from decimal import Decimal
 
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 from accounts.models import CustomUser, CompanyConfig
 from attendance.models import Attendance
@@ -76,7 +78,7 @@ class V01TenantTakeover(TestCase):
         c = auth(attacker)
         emps = c.get("/api/accounts/employees/")
         self.assertEqual(emps.status_code, 200)
-        logins = {e["login_id"] for e in emps.data}
+        logins = {e["login_id"] for e in emps.data["results"]}
         self.assertIn("VICTIMEMP", logins)
         self.assertIn("VICTIMADMIN", logins)
 
@@ -86,12 +88,10 @@ class V01TenantTakeover(TestCase):
 
 
 class V02RegistrationLeaksTraceback(TestCase):
-    """V-02: registration returns a raw Python traceback on any internal error."""
+    """V-02 FIXED: internal errors return an opaque reference, never a traceback."""
 
     @patch("accounts.views.ensure_company_table", side_effect=RuntimeError("db exploded"))
-    def test_traceback_in_response_body(self, _stub):
-        # assertLogs swaps out the root handlers; without it Django 4.2 tries to render
-        # its debug traceback page and dies on Python 3.14 (V-14).
+    def test_traceback_is_not_disclosed(self, _stub):
         with self.assertLogs("django.request", level="ERROR"):
             resp = APIClient().post(
                 "/api/accounts/register/",
@@ -105,28 +105,38 @@ class V02RegistrationLeaksTraceback(TestCase):
                 format="json",
             )
         self.assertEqual(resp.status_code, 500)
-        self.assertIn("traceback", resp.data)
-        self.assertIn('File "', resp.data["traceback"])
-        print("\n[V-02] leaked traceback tail:",
-              resp.data["traceback"].strip().splitlines()[-1][:160])
+        self.assertNotIn("traceback", resp.data)
+        body = str(resp.data)
+        self.assertNotIn('File "', body)
+        self.assertNotIn("db exploded", body)
+        self.assertNotIn("site-packages", body)
+        # A correlation id is returned so the operator can find the real error in logs.
+        self.assertRegex(resp.data["error_id"], r"^[0-9a-f]{12}$")
 
 
 @override_settings(DEBUG=True)
 class V03LoginBackdoor(TestCase):
-    """V-03: hardcoded credentials mint a superuser when DEBUG is on."""
+    """V-03 FIXED: the hardcoded credentials are gone, even with DEBUG on."""
 
-    def test_hardcoded_credentials_create_superuser(self):
-        self.assertFalse(CustomUser.objects.filter(email="admin1@gmail.com").exists())
+    def test_hardcoded_credentials_are_rejected(self):
         resp = APIClient().post(
             "/api/auth/login/",
             {"login_id": "admin1@gmail.com", "password": "adminisadmin"},
             format="json",
         )
-        self.assertEqual(resp.status_code, 200, resp.data)
-        self.assertIn("access", resp.data)
-        u = CustomUser.objects.get(email="admin1@gmail.com")
-        self.assertTrue(u.is_superuser)
-        print("\n[V-03] backdoor minted superuser:", u.login_id, "role:", u.role)
+        self.assertEqual(resp.status_code, 400)
+        self.assertNotIn("access", resp.data)
+        # And crucially: no account was conjured into existence by the attempt.
+        self.assertFalse(CustomUser.objects.filter(email="admin1@gmail.com").exists())
+
+    def test_no_backdoor_string_remains_in_source(self):
+        import inspect
+        from auth_api import serializers as auth_serializers
+
+        src = inspect.getsource(auth_serializers)
+        self.assertNotIn("adminisadmin", src)
+        self.assertNotIn("admin1@gmail.com", src)
+        self.assertNotIn("create_superuser", src)
 
 
 class V04CheckoutCrash(TestCase):
@@ -256,7 +266,9 @@ class V10PaymentGrantsNothing(TestCase):
     """V-10: payment verification stores no subscription -- paying grants no entitlement."""
 
     def test_verify_endpoint_persists_nothing(self):
-        import hashlib, hmac
+        import hashlib
+        import hmac
+
         from django.conf import settings
 
         order_id, payment_id = "order_TEST123", "pay_TEST123"
@@ -324,17 +336,17 @@ class V12RefreshTokenAuthenticatesWebSocket(TestCase):
         # "token_type" claim -- so a long-lived refresh token is accepted as WS credentials.
         validated = UntypedToken(refresh)
         self.assertEqual(validated["token_type"], "refresh")
-        self.assertEqual(validated[api_settings.USER_ID_CLAIM], emp.id)
+        self.assertEqual(int(validated[api_settings.USER_ID_CLAIM]), emp.id)
         print("\n[V-12] UntypedToken accepted a", validated["token_type"], "token")
 
 
 class V15MustChangePasswordBypass(TestCase):
-    """V-15: must_change_password is advisory only -- the API never enforces it."""
+    """V-15 FIXED: a pending password rotation blocks the whole API but the exits."""
 
-    def test_temp_password_holder_has_full_api_access(self):
-        emp = mk_user("TEMPPW", "Acme Corp", must_change_password=True)
+    def setUp(self):
+        self.emp = mk_user("TEMPPW", "Acme Corp", must_change_password=True)
         EmployeeSalary.objects.create(
-            employee=emp, monthly_salary=Decimal("4000.00"), currency="INR"
+            employee=self.emp, monthly_salary=Decimal("4000.00"), currency="INR"
         )
         resp = APIClient().post(
             "/api/auth/login/",
@@ -343,14 +355,33 @@ class V15MustChangePasswordBypass(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.data["must_change_password"])
+        self.client_ = APIClient()
+        self.client_.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['access']}")
 
-        # The very same token works everywhere without ever rotating the password.
-        c = APIClient()
-        c.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['access']}")
-        self.assertEqual(c.get("/api/dashboard/employee/").status_code, 200)
-        self.assertEqual(c.get("/api/payroll/salaries/").status_code, 200)
-        self.assertEqual(c.post("/api/attendance/check-in/", {}, format="json").status_code, 200)
-        self.assertTrue(CustomUser.objects.get(pk=emp.pk).must_change_password)
+    def test_business_endpoints_are_blocked(self):
+        for method, path in [
+            ("get", "/api/dashboard/employee/"),
+            ("get", "/api/payroll/salaries/"),
+            ("get", "/api/accounts/employees/"),
+            ("post", "/api/attendance/check-in/"),
+            ("post", "/api/leave/apply/"),
+        ]:
+            with self.subTest(path=path):
+                resp = getattr(self.client_, method)(path, {}, format="json")
+                self.assertEqual(resp.status_code, 403, path)
+                self.assertEqual(resp.data["detail"].code, "password_rotation_required")
+
+    def test_change_password_remains_reachable(self):
+        resp = self.client_.post(
+            "/api/auth/change-password/",
+            {"old_password": "Str0ngPassw0rd!42", "new_password": "An0therStr0ng!Pass"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertFalse(CustomUser.objects.get(pk=self.emp.pk).must_change_password)
+
+        # Once rotated, the rest of the API opens up again.
+        self.assertEqual(self.client_.get("/api/dashboard/employee/").status_code, 200)
 
 
 class V16HardDeleteDestroysPayrollHistory(TestCase):
@@ -389,7 +420,7 @@ class V17HRPrivilegeCreep(TestCase):
         # so HR simply omits the parameter and gets the owner row anyway.
         c = auth(hr)
         listing = c.get("/api/accounts/employees/")
-        self.assertIn("OWNER", {e["login_id"] for e in listing.data})
+        self.assertIn("OWNER", {e["login_id"] for e in listing.data["results"]})
 
         self.assertEqual(c.delete(f"/api/accounts/employees/{admin.id}/").status_code, 204)
         self.assertFalse(CustomUser.objects.filter(pk=admin.pk).exists())
@@ -401,27 +432,46 @@ class V18SalaryExposedInDirectory(TestCase):
     def test_salary_in_list_payload(self):
         hr = mk_user("SALHR", "Acme Corp", role="HR")
         mk_user("SALEMP", "Acme Corp", salary=Decimal("123456.00"))
-        rows = auth(hr).get("/api/accounts/employees/").data
+        rows = auth(hr).get("/api/accounts/employees/").data["results"]
         target = next(r for r in rows if r["login_id"] == "SALEMP")
         self.assertEqual(str(target["salary"]), "123456.00")
 
 
 class V19NoLoginRateLimit(TestCase):
-    """V-19: the login endpoint accepts unlimited password guesses."""
+    """V-19 FIXED: the login endpoint throttles repeated attempts."""
 
-    def test_fifty_failed_logins_all_processed(self):
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    # SimpleRateThrottle.THROTTLE_RATES is bound as a class attribute when the module
+    # is imported, so override_settings(REST_FRAMEWORK=...) cannot reach it. Patch the
+    # class directly.
+    @patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"login": "5/min"})
+    def test_brute_force_is_throttled(self):
         mk_user("BRUTE", "Acme Corp")
         c = APIClient()
-        codes = set()
-        for i in range(50):
+        codes = []
+        for i in range(12):
             r = c.post(
                 "/api/auth/login/",
                 {"login_id": "BRUTE", "password": f"guess-{i}"},
                 format="json",
             )
-            codes.add(r.status_code)
-        # Never once throttled (429).
-        self.assertEqual(codes, {400})
+            codes.append(r.status_code)
+        self.assertIn(429, codes, f"never throttled: {codes}")
+        self.assertEqual(codes[-1], 429)
+        print(f"\n[V-19] throttled after {codes.index(429)} failed attempts")
+
+    def test_login_view_declares_a_throttle_scope(self):
+        from auth_api.views import LoginAPIView
+
+        self.assertEqual(LoginAPIView.throttle_scope, "login")
+        self.assertTrue(
+            any(isinstance(t, ScopedRateThrottle) for t in LoginAPIView().get_throttles())
+        )
 
 
 class V20PayrollRerunErasesPaymentAudit(TestCase):

@@ -6,7 +6,14 @@ import sys
 
 def main():
     """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+    # The test suite gets its own settings module so that production settings can
+    # stay fail-closed (no secret key, no allowed hosts, no Postgres -> refuse to
+    # start) without making `manage.py test` require a wall of environment
+    # variables. An explicit DJANGO_SETTINGS_MODULE always wins.
+    if "test" in sys.argv[1:2]:
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings_test")
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
@@ -18,5 +25,5 @@ def main():
     execute_from_command_line(sys.argv)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
