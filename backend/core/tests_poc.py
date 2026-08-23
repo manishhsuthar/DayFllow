@@ -7,13 +7,15 @@ demonstrates a live defect and is expected to pass until its fix lands.
     python manage.py test core.tests_poc -v2
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
@@ -563,49 +565,279 @@ class V27NoPasswordReset(TestCase):
 
 
 class V04CheckoutCrash(TestCase):
-    """V-04: check-out on a row with no check-in still raises a 500."""
-
-    def test_checkout_without_checkin_is_unhandled(self):
-        emp = mk_user("CRASHEMP", mk_org("Acme Corp"))
-        Attendance.objects.create(user=emp, date=date.today(), status="LEAVE")
-        client = auth(emp)
-        client.raise_request_exception = False
-        with self.assertLogs("django.request", level="ERROR"):
-            resp = client.post("/api/attendance/check-out/", {}, format="json")
-        self.assertEqual(resp.status_code, 500)
-
-
-class V05LeaveDateValidation(TestCase):
-    """V-05: leave still accepts reversed and unbounded date ranges."""
+    """V-04 FIXED: check-out with no check-in is a clean 400, not a 500."""
 
     def setUp(self):
         self.org = mk_org("Acme Corp")
+        self.emp = mk_user("CRASHEMP", self.org)
 
-    def test_reversed_range_accepted(self):
-        resp = auth(mk_user("BADDATES", self.org)).post(
+    def test_checkout_on_a_leave_row_is_rejected_cleanly(self):
+        # Approving leave creates a row with check_in=None; this used to crash.
+        Attendance.objects.create(user=self.emp, date=self.org.today(), status="LEAVE")
+        resp = auth(self.emp).post("/api/attendance/check-out/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("not checked in", resp.data["detail"])
+
+    def test_checkout_with_no_row_at_all_is_rejected_cleanly(self):
+        resp = auth(self.emp).post("/api/attendance/check-out/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("No check-in found", resp.data["detail"])
+
+    def test_the_happy_path_still_works(self):
+        client = auth(self.emp)
+        self.assertEqual(client.post("/api/attendance/check-in/", {}, format="json").status_code, 200)
+        resp = client.post("/api/attendance/check-out/", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIsNotNone(resp.data["total_hours"])
+
+    def test_double_checkout_is_rejected(self):
+        client = auth(self.emp)
+        client.post("/api/attendance/check-in/", {}, format="json")
+        client.post("/api/attendance/check-out/", {}, format="json")
+        resp = client.post("/api/attendance/check-out/", {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Already checked out", resp.data["detail"])
+
+
+class V05LeaveDateValidation(TestCase):
+    """V-05 FIXED: leave ranges are ordered, bounded, and cannot be open-ended."""
+
+    def setUp(self):
+        self.org = mk_org("Acme Corp")
+        self.emp = mk_user("LEAVEVAL", self.org)
+        self.client_ = auth(self.emp)
+
+    def _apply(self, start, end, leave_type="CASUAL"):
+        return self.client_.post(
+            "/api/leave/apply/",
+            {
+                "leave_type": leave_type,
+                "start_date": str(start),
+                "end_date": str(end),
+                "reason": "a valid reason",
+            },
+            format="json",
+        )
+
+    def test_reversed_range_is_rejected(self):
+        today = self.org.today()
+        resp = self._apply(today + timedelta(days=30), today + timedelta(days=1))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("end_date", resp.data)
+
+    def test_decade_long_leave_is_rejected(self):
+        today = self.org.today()
+        resp = self._apply(today + timedelta(days=1), today + timedelta(days=3650))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("end_date", resp.data)
+
+    def test_ancient_backdating_is_rejected(self):
+        today = self.org.today()
+        resp = self._apply(today - timedelta(days=400), today - timedelta(days=398))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("start_date", resp.data)
+
+    def test_far_future_leave_is_rejected(self):
+        today = self.org.today()
+        resp = self._apply(today + timedelta(days=800), today + timedelta(days=802))
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("start_date", resp.data)
+
+    def test_an_empty_reason_is_rejected(self):
+        today = self.org.today()
+        resp = self.client_.post(
             "/api/leave/apply/",
             {
                 "leave_type": "CASUAL",
-                "start_date": "2030-12-31",
-                "end_date": "2030-01-01",
-                "reason": "reversed",
+                "start_date": str(today + timedelta(days=1)),
+                "end_date": str(today + timedelta(days=2)),
+                "reason": "  ",
             },
             format="json",
         )
-        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("reason", resp.data)
 
-    def test_decade_long_leave_accepted(self):
-        resp = auth(mk_user("LONGLEAVE", self.org)).post(
+    def test_a_reasonable_request_is_accepted(self):
+        today = self.org.today()
+        resp = self._apply(today + timedelta(days=1), today + timedelta(days=3))
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["leave"]["total_days"], 3)
+
+
+class V06LeaveApprovalDestroysAttendance(TestCase):
+    """V-06 FIXED: approval can never overwrite a day the employee worked."""
+
+    def setUp(self):
+        self.org = mk_org("Acme Corp")
+        self.admin = mk_user("OVERADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("OVEREMP", self.org)
+
+    def test_approval_is_refused_when_the_range_contains_a_worked_day(self):
+        worked = self.org.today() - timedelta(days=1)
+        Attendance.objects.create(
+            user=self.emp, date=worked, status="PRESENT", total_hours=9.0,
+            check_in=timezone.now() - timedelta(days=1),
+        )
+        leave = LeaveRequest.objects.create(
+            user=self.emp, leave_type="SICK", start_date=worked, end_date=worked, reason="x"
+        )
+        resp = auth(self.admin).post(
+            f"/api/leave/action/{leave.id}/", {"action": "APPROVE"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 409)
+
+        attendance = Attendance.objects.get(user=self.emp, date=worked)
+        self.assertEqual(attendance.status, "PRESENT")
+        self.assertEqual(attendance.total_hours, 9.0)
+        leave.refresh_from_db()
+        self.assertEqual(leave.status, "PENDING")
+
+    def test_applying_over_a_worked_day_is_refused_up_front(self):
+        worked = self.org.today() - timedelta(days=1)
+        Attendance.objects.create(
+            user=self.emp, date=worked, status="PRESENT", total_hours=9.0,
+            check_in=timezone.now() - timedelta(days=1),
+        )
+        resp = auth(self.emp).post(
             "/api/leave/apply/",
             {
-                "leave_type": "PAID",
-                "start_date": "2030-01-01",
-                "end_date": "2040-01-01",
-                "reason": "decade off",
+                "leave_type": "SICK",
+                "start_date": str(worked),
+                "end_date": str(worked),
+                "reason": "felt unwell",
             },
             format="json",
         )
-        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("recorded attendance", resp.data["detail"])
+
+    def test_a_clean_approval_marks_leave_and_clears_stale_times(self):
+        start = self.org.today() + timedelta(days=1)
+        end = start + timedelta(days=2)
+        # A row exists for one of the days, but with no check-in.
+        Attendance.objects.create(user=self.emp, date=start, status="ABSENT", total_hours=3.0)
+        leave = LeaveRequest.objects.create(
+            user=self.emp, leave_type="PAID", start_date=start, end_date=end, reason="x"
+        )
+        resp = auth(self.admin).post(
+            f"/api/leave/action/{leave.id}/", {"action": "APPROVE"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["days_marked"], 3)
+
+        for row in Attendance.objects.filter(user=self.emp, date__gte=start, date__lte=end):
+            self.assertEqual(row.status, "LEAVE")
+            self.assertIsNone(row.check_in)
+            self.assertEqual(row.total_hours, 0.0)
+
+    def test_nobody_approves_their_own_leave(self):
+        hr = mk_user("SELFHR", self.org, role="HR")
+        start = self.org.today() + timedelta(days=1)
+        leave = LeaveRequest.objects.create(
+            user=hr, leave_type="CASUAL", start_date=start, end_date=start, reason="x"
+        )
+        resp = auth(hr).post(f"/api/leave/action/{leave.id}/", {"action": "APPROVE"}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_decided_request_cannot_be_decided_again(self):
+        start = self.org.today() + timedelta(days=1)
+        leave = LeaveRequest.objects.create(
+            user=self.emp, leave_type="CASUAL", start_date=start, end_date=start, reason="x"
+        )
+        client = auth(self.admin)
+        self.assertEqual(
+            client.post(f"/api/leave/action/{leave.id}/", {"action": "REJECT"}, format="json").status_code,
+            200,
+        )
+        resp = client.post(f"/api/leave/action/{leave.id}/", {"action": "APPROVE"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+
+class V26TimezoneHandling(TestCase):
+    """V-26 FIXED: the working day is resolved in the organization's timezone."""
+
+    def test_organization_today_uses_its_own_zone(self):
+        from unittest.mock import patch as _patch
+
+        kolkata = mk_org("Kolkata Co", timezone="Asia/Kolkata")
+        honolulu = mk_org("Honolulu Co", timezone="Pacific/Honolulu")
+
+        # 2026-06-15 20:00 UTC: already the 16th in Kolkata, still the 15th in Honolulu.
+        moment = datetime(2026, 6, 15, 20, 0, tzinfo=dt_timezone.utc)
+        with _patch("django.utils.timezone.now", return_value=moment):
+            self.assertEqual(kolkata.today(), date(2026, 6, 16))
+            self.assertEqual(honolulu.today(), date(2026, 6, 15))
+
+    def test_checkin_is_recorded_against_the_org_day(self):
+        from unittest.mock import patch as _patch
+
+        org = mk_org("Kolkata Co", timezone="Asia/Kolkata")
+        emp = mk_user("TZEMP", org)
+        moment = datetime(2026, 6, 15, 20, 0, tzinfo=dt_timezone.utc)
+        with _patch("django.utils.timezone.now", return_value=moment):
+            resp = auth(emp).post("/api/attendance/check-in/", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(Attendance.objects.get(user=emp).date, date(2026, 6, 16))
+
+    def test_an_invalid_org_timezone_falls_back_to_utc(self):
+        org = mk_org("Broken Co")
+        Organization.objects.filter(pk=org.pk).update(timezone="Not/AZone")
+        org.refresh_from_db()
+        self.assertEqual(org.today(), timezone.now().date())
+
+
+class V28UnboundedHistoryQueries(TestCase):
+    """V-28 FIXED: history endpoints are bounded, filterable and paginated."""
+
+    def setUp(self):
+        self.org = mk_org("Acme Corp")
+        self.admin = mk_user("HISTADMIN", self.org, role="ADMIN")
+        self.emp = mk_user("HISTEMP", self.org)
+        today = self.org.today()
+        Attendance.objects.bulk_create(
+            [
+                Attendance(user=self.emp, date=today - timedelta(days=i), status="PRESENT")
+                for i in range(200)
+            ]
+        )
+
+    def test_default_window_does_not_return_everything(self):
+        rows = auth(self.emp).get("/api/attendance/my/").data
+        self.assertIn("count", rows)
+        self.assertLess(rows["count"], 200)
+
+    def test_an_explicit_range_is_honoured(self):
+        today = self.org.today()
+        resp = auth(self.emp).get(
+            f"/api/attendance/my/?start_date={today - timedelta(days=6)}&end_date={today}"
+        )
+        self.assertEqual(resp.data["count"], 7)
+
+    def test_an_oversized_range_is_rejected(self):
+        today = self.org.today()
+        resp = auth(self.emp).get(
+            f"/api/attendance/my/?start_date={today - timedelta(days=800)}&end_date={today}"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_a_reversed_range_is_rejected(self):
+        today = self.org.today()
+        resp = auth(self.emp).get(
+            f"/api/attendance/my/?start_date={today}&end_date={today - timedelta(days=7)}"
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_admins_are_no_longer_excluded_from_oversight(self):
+        Attendance.objects.create(user=self.admin, date=self.org.today(), status="PRESENT")
+        rows = auth(self.admin).get("/api/attendance/all/").data["results"]
+        self.assertIn("HISTADMIN", {r["user_login_id"] for r in rows})
+
+    def test_results_can_be_filtered_to_one_employee(self):
+        resp = auth(self.admin).get(f"/api/attendance/all/?employee_id={self.emp.id}")
+        self.assertTrue(all(r["user"] == self.emp.id for r in resp.data["results"]))
 
 
 class V08NegativeNetSalary(TestCase):

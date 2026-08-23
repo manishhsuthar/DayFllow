@@ -9,9 +9,9 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-01 | Critical | Unauthenticated tenant takeover via public registration | 🟢 Fixed | tenancy | `V01TenantTakeover` |
 | V-02 | High | Registration leaks full Python traceback | 🟢 Fixed | security baseline | `V02RegistrationLeaksTraceback` |
 | V-03 | Critical | Hardcoded credential backdoor mints a superuser | 🟢 Fixed | security baseline | `V03LoginBackdoor` |
-| V-04 | Medium | Check-out 500s when there is no check-in | 🔴 Open | — | `V04CheckoutCrash` |
-| V-05 | Medium | Leave accepts reversed / unbounded date ranges | 🔴 Open | — | `V05LeaveDateValidation` |
-| V-06 | High | Leave approval destroys attendance history | 🔴 Open | — | `V06LeaveApprovalDestroysAttendance` |
+| V-04 | Medium | Check-out 500s when there is no check-in | 🟢 Fixed | attendance/leave | `V04CheckoutCrash` |
+| V-05 | Medium | Leave accepts reversed / unbounded date ranges | 🟢 Fixed | attendance/leave | `V05LeaveDateValidation` |
+| V-06 | High | Leave approval destroys attendance history | 🟢 Fixed | attendance/leave | `V06LeaveApprovalDestroysAttendance` |
 | V-07 | High | Employees post unlimited expenses against own salary | 🔴 Open | — | `V07EmployeeSelfExpense` |
 | V-08 | Medium | Payroll can compute a negative net salary | 🔴 Open | — | `V08NegativeNetSalary` |
 | V-09 | High | Stored XSS in the HTML salary slip | 🟢 Fixed | tenancy | `V09SlipXSS` |
@@ -31,9 +31,9 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-23 | Medium | JWTs in localStorage; no rotation or revocation | 🔴 Open | — | — |
 | V-24 | Medium | Authorization enforced in UI, not API | 🔴 Open | — | — |
 | V-25 | Low | Company config can orphan roles and departments | 🟢 Fixed | tenancy | — |
-| V-26 | Medium | Naive timezone handling corrupts day boundaries | 🔴 Open | — | — |
+| V-26 | Medium | Naive timezone handling corrupts day boundaries | 🟢 Fixed | attendance/leave | `V26TimezoneHandling` |
 | V-27 | High | No password reset; no email backend | 🟢 Fixed | tenancy | — |
-| V-28 | Low | `AllAttendance`/`AllLeaves` exclude ADMIN, unfiltered | 🔴 Open | — | — |
+| V-28 | Low | `AllAttendance`/`AllLeaves` exclude ADMIN, unfiltered | 🟢 Fixed | attendance/leave | `V28UnboundedHistoryQueries` |
 | V-29 | Low | No pagination on any list endpoint | 🟢 Fixed | security baseline | — |
 | V-30 | Medium | No audit log for privileged or financial actions | 🔴 Open | — | — |
 | V-31 | Low | Electron opens DevTools in production builds | 🔴 Open | — | — |
@@ -45,9 +45,32 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 
 | | Critical | High | Medium | Low | Total |
 |---|---|---|---|---|---|
-| Open | 1 | 3 | 7 | 5 | **16** |
+| Open | 1 | 2 | 4 | 4 | **11** |
 | Partial | 0 | 0 | 0 | 1 | **1** |
-| Fixed | 4 | 6 | 5 | 2 | **17** |
+| Fixed | 4 | 7 | 8 | 3 | **22** |
+
+### attendance/leave — domain correctness
+
+Fixed V-04, V-05, V-06, V-26, V-28.
+
+- **Approving leave can no longer destroy worked days.** It used to `update_or_create` the whole
+  range to `LEAVE`, leaving rows that claimed both `LEAVE` and nine hours worked — and since
+  payroll pays on `PRESENT` days, an approved leave request silently cut pay for days the
+  employee was at work. Applying over a day with a recorded check-in is now refused up front,
+  approval over one returns 409, and a legitimate approval clears the time fields instead of
+  leaving stale ones behind.
+- **Leave ranges are validated**: end on or after start, at most 90 days, at most 30 days
+  backdated, at most a year ahead, and a non-empty reason. The unbounded
+  `while current <= end_date` loop that wrote one attendance row per day could previously be
+  driven ~3,650 iterations by a single request.
+- Nobody approves their own leave, and a decided request cannot be decided twice.
+- **Check-out no longer 500s** when `check_in` is `NULL` — the exact state approved leave creates.
+  Check-in/check-out now run under `select_for_update`.
+- **The working day comes from `Organization.timezone`**, not `date.today()` on the server. The
+  old code mixed server-local dates with UTC timestamps, so the two disagreed for part of every
+  day and neither matched the employee's actual working day.
+- History endpoints are bounded (90-day default, 366-day maximum), filterable by employee,
+  status and date range, and paginated. Admins are no longer excluded from attendance oversight.
 
 ### tenancy — a real Organization model
 
