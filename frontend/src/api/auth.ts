@@ -1,4 +1,15 @@
-const BASE_URL = "/api";
+const getBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
+  if (envUrl && !envUrl.startsWith("/")) {
+    return envUrl;
+  }
+  if (window.location.protocol === "file:" || !envUrl) {
+    return "https://dayfllow.onrender.com/api";
+  }
+  return envUrl || "/api";
+};
+
+const BASE_URL = getBaseUrl();
 
 export const login = async (loginId, password) => {
   const response = await fetch(`${BASE_URL}/auth/login/`, {

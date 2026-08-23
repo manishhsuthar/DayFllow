@@ -3,8 +3,9 @@ import { Header } from '@/components/layout/Header';
 import { AvatarWithBadge } from '@/components/Avatar';
 import { Search, Download, MoreVertical, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { exportEmployees, fetchEmployees } from '@/api/employees';
+import { exportEmployees, fetchEmployees, deleteEmployee } from '@/api/employees';
 import { REALTIME_DATA_CHANGED_EVENT } from '@/hooks/useRealtimeUpdates';
+import { useToast } from '@/hooks/use-toast';
 
 interface Employee {
   id: number;
@@ -27,8 +28,14 @@ const Employees: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEmployees, setSelectedEmployees] = useState<number[]>([]);
   const [isExporting, setIsExporting] = useState(false);
+
+  const [activeMenuEmployeeId, setActiveMenuEmployeeId] = useState<number | null>(null);
+  const [employeeToDelete, setEmployeeToDelete] = useState<Employee | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const navigate = useNavigate();
   const location = useLocation();
+  const { toast } = useToast();
 
   useEffect(() => {
     let isMounted = true;
@@ -56,11 +63,38 @@ const Employees: React.FC = () => {
     };
     window.addEventListener(REALTIME_DATA_CHANGED_EVENT, handleRealtimeRefresh);
 
+    const handleDocumentClick = () => {
+      setActiveMenuEmployeeId(null);
+    };
+    document.addEventListener('click', handleDocumentClick);
+
     return () => {
       isMounted = false;
       window.removeEventListener(REALTIME_DATA_CHANGED_EVENT, handleRealtimeRefresh);
+      document.removeEventListener('click', handleDocumentClick);
     };
   }, [location.state?.refreshKey]);
+
+  const handleDeleteConfirm = async (employeeId: number) => {
+    setIsDeleting(true);
+    try {
+      await deleteEmployee(employeeId);
+      setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
+      toast({
+        title: "Employee deleted",
+        description: "The employee has been removed successfully.",
+      });
+    } catch (err) {
+      toast({
+        title: "Deletion failed",
+        description: err instanceof Error ? err.message : "Failed to delete employee. Try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+      setEmployeeToDelete(null);
+    }
+  };
 
   const filteredEmployees = employees.filter(emp => {
     const fullName = `${emp.first_name} ${emp.last_name}`.trim().toLowerCase();
@@ -258,10 +292,36 @@ const Employees: React.FC = () => {
                         <td className="px-4 py-4 text-sm text-foreground">
                           {new Date(employee.date_of_joining).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         </td>
-                        <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
-                          <button className="p-2 hover:bg-muted rounded-lg transition-colors">
+                        <td className="px-4 py-4 relative" onClick={(e) => e.stopPropagation()}>
+                          <button 
+                            onClick={() => setActiveMenuEmployeeId(activeMenuEmployeeId === employee.id ? null : employee.id)}
+                            className="p-2 hover:bg-muted rounded-lg transition-colors"
+                          >
                             <MoreVertical size={16} className="text-muted-foreground" />
                           </button>
+
+                          {activeMenuEmployeeId === employee.id && (
+                            <div className="absolute right-4 mt-1 w-32 bg-popover text-popover-foreground border border-border rounded-lg shadow-lg z-50 py-1">
+                              <button
+                                onClick={() => {
+                                  setActiveMenuEmployeeId(null);
+                                  navigate('/profile/employee');
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                              >
+                                View Profile
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setActiveMenuEmployeeId(null);
+                                  setEmployeeToDelete(employee);
+                                }}
+                                className="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -287,6 +347,34 @@ const Employees: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {employeeToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card border border-border rounded-xl shadow-lg max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-150">
+            <h3 className="text-lg font-semibold text-foreground mb-2">Delete Employee</h3>
+            <p className="text-sm text-muted-foreground mb-6">
+              Are you sure you want to delete <span className="font-semibold text-foreground">{employeeToDelete.first_name} {employeeToDelete.last_name}</span>? This action is permanent and will delete all associated payroll and attendance records.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEmployeeToDelete(null)}
+                className="px-4 py-2 border border-border rounded-lg text-foreground hover:bg-accent text-sm font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteConfirm(employeeToDelete.id)}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-destructive text-destructive-foreground rounded-lg hover:bg-destructive/90 text-sm font-medium transition-colors disabled:opacity-60"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -73,10 +73,9 @@ const CompanySetup: React.FC = () => {
     return (
       departments.length > 0 &&
       roles.length > 0 &&
-      employmentTypes.length > 0 &&
-      logoUrl.trim().length > 0
+      employmentTypes.length > 0
     );
-  }, [departmentsInput, rolesInput, employmentTypesInput, logoUrl]);
+  }, [departmentsInput, rolesInput, employmentTypesInput]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -87,10 +86,10 @@ const CompanySetup: React.FC = () => {
     const employmentTypes = splitValues(employmentTypesInput);
     const trimmedLogoUrl = logoUrl.trim();
 
-    if (!departments.length || !roles.length || !employmentTypes.length || !trimmedLogoUrl) {
+    if (!departments.length || !roles.length || !employmentTypes.length) {
       toast({
         title: "All fields are required",
-        description: "Enter all lists and add your company logo URL.",
+        description: "Enter departments, roles, and employment types.",
         variant: "destructive",
       });
       return;

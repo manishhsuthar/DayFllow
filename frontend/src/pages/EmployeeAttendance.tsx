@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/layout/Header';
-import { ChevronLeft, ChevronRight, Calendar, Check, Clock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar, Check, Clock, ShieldCheck } from 'lucide-react';
 import { fetchMyAttendance, type AttendanceRecord } from '@/api/attendance';
+import { fetchCompanyConfig } from '@/api/companyConfig';
 import { REALTIME_DATA_CHANGED_EVENT } from '@/hooks/useRealtimeUpdates';
 
 const HOURS_PER_DAY = 8;
@@ -36,6 +37,7 @@ const formatExtraHours = (hours: number) => {
 const EmployeeAttendance: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
+  const [bypassAttendance, setBypassAttendance] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,8 +46,14 @@ const EmployeeAttendance: React.FC = () => {
 
     const loadAttendance = async () => {
       try {
-        const data = await fetchMyAttendance();
+        const [data, config] = await Promise.all([
+          fetchMyAttendance(),
+          fetchCompanyConfig().catch(() => null)
+        ]);
         if (isMounted) {
+          if (config) {
+            setBypassAttendance(!!config.bypass_attendance);
+          }
           const sorted = [...data].sort((a, b) => b.date.localeCompare(a.date));
           setAttendance(sorted);
           setError(null);
@@ -83,13 +91,26 @@ const EmployeeAttendance: React.FC = () => {
     });
   }, [attendance, currentDate]);
 
-  const presentDays = monthAttendance.filter(
-    (record) => record.status === 'PRESENT' || record.status === 'HALF_DAY',
-  ).length;
+  const presentDays = useMemo(() => {
+    if (bypassAttendance) {
+      return new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+    }
+    return monthAttendance.filter(
+      (record) => record.status === 'PRESENT' || record.status === 'HALF_DAY',
+    ).length;
+  }, [bypassAttendance, monthAttendance, currentDate]);
 
-  const leavesTaken = monthAttendance.filter((record) => record.status === 'LEAVE').length;
+  const leavesTaken = useMemo(() => {
+    if (bypassAttendance) return 0;
+    return monthAttendance.filter((record) => record.status === 'LEAVE').length;
+  }, [bypassAttendance, monthAttendance]);
 
-  const totalWorkingDays = monthAttendance.filter((record) => record.status !== 'LEAVE').length;
+  const totalWorkingDays = useMemo(() => {
+    if (bypassAttendance) {
+      return new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate();
+    }
+    return monthAttendance.filter((record) => record.status !== 'LEAVE').length;
+  }, [bypassAttendance, monthAttendance, currentDate]);
 
   const moveMonth = (offset: number) => {
     setCurrentDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
@@ -148,6 +169,18 @@ const EmployeeAttendance: React.FC = () => {
                 <tr>
                   <td className="px-4 py-10 text-center text-sm text-destructive" colSpan={5}>
                     {error}
+                  </td>
+                </tr>
+              ) : bypassAttendance ? (
+                <tr>
+                  <td className="px-4 py-16 text-center text-sm" colSpan={5}>
+                    <div className="flex flex-col items-center justify-center gap-2 text-emerald-600 dark:text-emerald-400">
+                      <ShieldCheck size={40} className="stroke-[1.5]" />
+                      <p className="font-semibold text-base mt-2">Attendance Bypass Enabled</p>
+                      <p className="text-muted-foreground max-w-md text-xs">
+                        Your company has enabled attendance bypass. You are automatically marked as present for all work days.
+                      </p>
+                    </div>
                   </td>
                 </tr>
               ) : monthAttendance.length === 0 ? (

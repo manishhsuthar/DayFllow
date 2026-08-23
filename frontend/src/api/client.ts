@@ -1,4 +1,15 @@
-const BASE_URL = "/api";
+const getBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
+  if (envUrl && !envUrl.startsWith("/")) {
+    return envUrl;
+  }
+  if (window.location.protocol === "file:" || !envUrl) {
+    return "https://dayfllow.onrender.com/api";
+  }
+  return envUrl || "/api";
+};
+
+const BASE_URL = getBaseUrl();
 
 export const getAuthToken = () => {
   const raw = localStorage.getItem("dayflow_auth_tokens");
@@ -25,14 +36,27 @@ export const getRealtimeWebSocketUrl = () => {
   }
 
   const configuredUrl = import.meta.env.VITE_WS_URL as string | undefined;
-  const url = new URL(configuredUrl || "/ws/updates/", window.location.href);
+  let urlStr = configuredUrl;
 
-  if (url.protocol === "http:") {
-    url.protocol = "ws:";
-  } else if (url.protocol === "https:") {
-    url.protocol = "wss:";
+  if (!urlStr) {
+    if (window.location.protocol === "file:") {
+      urlStr = "wss://dayfllow.onrender.com/ws/updates/";
+    } else {
+      urlStr = "/ws/updates/";
+    }
   }
 
+  if (urlStr.startsWith("/")) {
+    const resolvedUrl = new URL(urlStr, window.location.href);
+    if (resolvedUrl.protocol === "http:") {
+      resolvedUrl.protocol = "ws:";
+    } else if (resolvedUrl.protocol === "https:") {
+      resolvedUrl.protocol = "wss:";
+    }
+    urlStr = resolvedUrl.toString();
+  }
+
+  const url = new URL(urlStr);
   url.searchParams.set("token", token);
   return url.toString();
 };
@@ -103,6 +127,25 @@ export const apiPut = async (path: string, body: unknown) => {
 
   if (!response.ok) {
     throw new Error(await parseError(response));
+  }
+
+  return response.json();
+};
+
+export const apiDelete = async (path: string) => {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: "DELETE",
+    headers: {
+      ...getAuthHeaders(),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+
+  if (response.status === 204) {
+    return null;
   }
 
   return response.json();

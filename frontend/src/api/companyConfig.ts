@@ -6,6 +6,7 @@ export interface CompanyConfig {
   roles: Array<"EMP" | "INT" | "HR">;
   employment_types: string[];
   logo_url: string;
+  bypass_attendance?: boolean;
   updated_at: string | null;
 }
 
@@ -18,6 +19,7 @@ export const saveCompanyConfig = async (payload: {
   roles: string[];
   employment_types: string[];
   logo_url: string;
+  bypass_attendance?: boolean;
 }) => {
   return apiPut("/accounts/company-config/", payload) as Promise<CompanyConfig>;
 };

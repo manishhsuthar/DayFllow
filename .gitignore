@@ -16,3 +16,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.agents
+.github/workflows/build.yml
+.vscode

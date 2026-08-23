@@ -11,6 +11,7 @@ import {
 } from '@/api/attendance';
 import { useToast } from '@/hooks/use-toast';
 import { useRealtimeRefresh } from '@/hooks/useRealtimeRefresh';
+import { fetchCompanyConfig } from '@/api/companyConfig';
 
 interface HeaderProps {
   breadcrumb: string;
@@ -37,6 +38,7 @@ export const Header: React.FC<HeaderProps> = ({ breadcrumb, subtitle }) => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [bypassAttendance, setBypassAttendance] = useState(false);
   const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null);
   const [isAttendanceLoading, setIsAttendanceLoading] = useState(false);
   const [isAttendanceActionLoading, setIsAttendanceActionLoading] = useState(false);
@@ -63,8 +65,16 @@ export const Header: React.FC<HeaderProps> = ({ breadcrumb, subtitle }) => {
     const loadTodayAttendance = async () => {
       setIsAttendanceLoading(true);
       try {
-        const records = await fetchMyAttendance();
+        const [records, config] = await Promise.all([
+          fetchMyAttendance(),
+          fetchCompanyConfig().catch(() => null)
+        ]);
         if (!mounted) return;
+
+        if (config) {
+          setBypassAttendance(!!config.bypass_attendance);
+        }
+
         const today = toLocalDateString(new Date());
         const todayRecord = records.find((record) => record.date === today) ?? null;
         setTodayAttendance(todayRecord);
@@ -157,37 +167,44 @@ export const Header: React.FC<HeaderProps> = ({ breadcrumb, subtitle }) => {
       {/* Right Section */}
       <div className="flex items-center gap-4">
         {!isAdmin && (
-          <button
-            onClick={handleAttendanceAction}
-            disabled={
-              isAttendanceLoading ||
-              isAttendanceActionLoading ||
-              attendanceState === 'checked-out' ||
-              attendanceState === 'on-leave'
-            }
-            className="px-3 py-1.5 rounded-lg border border-border bg-background text-left transition-transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            <p className="text-xs font-semibold text-foreground">
-              {isAttendanceLoading
-                ? 'Loading...'
-                : attendanceState === 'on-leave'
-                  ? 'On Leave'
-                  : attendanceState === 'pending'
-                  ? 'Check In'
+          bypassAttendance ? (
+            <div className="px-3 py-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-left select-none">
+              <p className="text-xs font-semibold">Auto-Present Active</p>
+              <p className="text-[10px] text-emerald-500/80">Attendance bypass enabled</p>
+            </div>
+          ) : (
+            <button
+              onClick={handleAttendanceAction}
+              disabled={
+                isAttendanceLoading ||
+                isAttendanceActionLoading ||
+                attendanceState === 'checked-out' ||
+                attendanceState === 'on-leave'
+              }
+              className="px-3 py-1.5 rounded-lg border border-border bg-background text-left transition-transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <p className="text-xs font-semibold text-foreground">
+                {isAttendanceLoading
+                  ? 'Loading...'
+                  : attendanceState === 'on-leave'
+                    ? 'On Leave'
+                    : attendanceState === 'pending'
+                    ? 'Check In'
+                    : attendanceState === 'checked-in'
+                      ? 'Check Out'
+                      : 'Done'}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                {attendanceState === 'pending'
+                  ? 'Pending'
+                  : attendanceState === 'on-leave'
+                    ? 'Approved leave for today'
                   : attendanceState === 'checked-in'
-                    ? 'Check Out'
-                    : 'Done'}
-            </p>
-            <p className="text-[11px] text-muted-foreground">
-              {attendanceState === 'pending'
-                ? 'Pending'
-                : attendanceState === 'on-leave'
-                  ? 'Approved leave for today'
-                : attendanceState === 'checked-in'
-                  ? `Checked in at ${formatTime(todayAttendance?.check_in ?? null)}`
-                  : `Checked out at ${formatTime(todayAttendance?.check_out ?? null)}`}
-            </p>
-          </button>
+                    ? `Checked in at ${formatTime(todayAttendance?.check_in ?? null)}`
+                    : `Checked out at ${formatTime(todayAttendance?.check_out ?? null)}`}
+              </p>
+            </button>
+          )
         )}
 
         <NotificationBell />

@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "@/api/client";
+import { apiGet, apiPost, apiDownload } from "@/api/client";
 
 export interface SalaryRecord {
   employee_id: number;
@@ -130,6 +130,10 @@ export const creditPayroll = async (payrollId: number) => {
 
 export const fetchPayrollSlip = async (payrollId: number) => {
   return apiGet(`/payroll/slips/${payrollId}/`) as Promise<PayrollSlip>;
+};
+
+export const downloadPayrollSlip = async (payrollId: number) => {
+  return apiDownload(`/payroll/slips/${payrollId}/html/?download=true`);
 };
 
 export const addExpense = async (payload: {

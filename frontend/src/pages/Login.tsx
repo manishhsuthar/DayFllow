@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { AuthLayout } from '@/components/auth/AuthLayout';
@@ -12,12 +12,23 @@ const Login: React.FC = () => {
   const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [loginRole, setLoginRole] = useState<'EMP' | 'ADMIN'>('EMP');
   const [isLoading, setIsLoading] = useState(false);
   const { login, logout } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+
+  useEffect(() => {
+    const savedLoginId = localStorage.getItem('savedLoginId');
+    const savedLoginRole = localStorage.getItem('savedLoginRole');
+    if (savedLoginId) {
+      setLoginId(savedLoginId);
+    }
+    if (savedLoginRole === 'ADMIN' || savedLoginRole === 'EMP') {
+      setLoginRole(savedLoginRole);
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,6 +36,15 @@ const Login: React.FC = () => {
 
     try {
       const user = await login(loginId, password);
+      
+      if (rememberMe) {
+        localStorage.setItem('savedLoginId', loginId);
+        localStorage.setItem('savedLoginRole', loginRole);
+      } else {
+        localStorage.removeItem('savedLoginId');
+        localStorage.removeItem('savedLoginRole');
+      }
+
       toast({
         title: 'Welcome back!',
         description: 'You have successfully logged in.',

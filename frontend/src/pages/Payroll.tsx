@@ -8,6 +8,7 @@ import {
   creditPayroll,
   fetchPayrollRecords,
   fetchPayrollSlip,
+  downloadPayrollSlip,
   fetchSalaryRecords,
   runPayroll,
   upsertSalary,
@@ -47,6 +48,26 @@ const employeeDisplayName = (employee: EmployeeOption) => {
   return fullName || employee.login_id;
 };
 
+const loadHtml2Pdf = (): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    if ((window as any).html2pdf) {
+      resolve((window as any).html2pdf);
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
+    script.integrity = "sha512-GsLlZN/3F2ErC5IfS51RRmtCgoVCqV9424apdxW67AR3t3ryAXaoTFReSLjNIBoQE50f8YGHvcbS1wLtKGYZ8w==";
+    script.crossOrigin = "anonymous";
+    script.onload = () => {
+      resolve((window as any).html2pdf);
+    };
+    script.onerror = (err) => {
+      reject(err);
+    };
+    document.body.appendChild(script);
+  });
+};
+
 const Payroll: React.FC = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -60,6 +81,7 @@ const Payroll: React.FC = () => {
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [loadingSlipId, setLoadingSlipId] = useState<number | null>(null);
+  const [downloadingSlipId, setDownloadingSlipId] = useState<number | null>(null);
   const [savingSalary, setSavingSalary] = useState(false);
   const [runningPayroll, setRunningPayroll] = useState(false);
   const [creditingPayrollId, setCreditingPayrollId] = useState<number | null>(null);
@@ -76,6 +98,8 @@ const Payroll: React.FC = () => {
   const [addingExpense, setAddingExpense] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
+  const [recordMonth, setRecordMonth] = useState(getCurrentMonth());
+  const [recordStatus, setRecordStatus] = useState<"ALL" | "PENDING" | "PAID">("ALL");
 
 
   const selectedEmployee = useMemo(
@@ -345,15 +369,79 @@ const Payroll: React.FC = () => {
     }
   };
 
+  const handleDownloadSlip = async (payrollId: number) => {
+    if (!selectedSlip || selectedSlip.id !== payrollId) return;
+    
+    const element = document.getElementById("slip-content");
+    if (!element) {
+      toast({
+        title: "Download failed",
+        description: "Slip element not found.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setDownloadingSlipId(payrollId);
+    try {
+      const html2pdf = await loadHtml2Pdf();
+      const opt = {
+        margin:       15,
+        filename:     `salary_slip_${selectedSlip.employee.login_id}_${selectedSlip.month}.pdf`,
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true, logging: false },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      await html2pdf().set(opt).from(element).save();
+
+      toast({
+        title: "Download complete",
+        description: "Salary slip PDF downloaded successfully.",
+      });
+    } catch (err) {
+      toast({
+        title: "Download failed",
+        description: err instanceof Error ? err.message : "Try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingSlipId(null);
+    }
+  };
+
   const handleViewSlip = async (payrollId: number) => {
     setLoadingSlipId(payrollId);
     try {
       const slip = await fetchPayrollSlip(payrollId);
       setSelectedSlip(slip);
-      toast({
-        title: "Salary slip ready",
-        description: `${slip.month_label} slip loaded.`,
-      });
+
+      setTimeout(async () => {
+        const element = document.getElementById("slip-content");
+        if (element) {
+          try {
+            const html2pdf = await loadHtml2Pdf();
+            const opt = {
+              margin:       15,
+              filename:     `salary_slip_${slip.employee.login_id}_${slip.month}.pdf`,
+              image:        { type: 'jpeg', quality: 0.98 },
+              html2canvas:  { scale: 2, useCORS: true, logging: false },
+              jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+            await html2pdf().set(opt).from(element).save();
+            toast({
+              title: "Salary slip ready",
+              description: `${slip.month_label} slip downloaded as PDF.`,
+            });
+          } catch (pdfErr) {
+            console.error("PDF generation failed:", pdfErr);
+            toast({
+              title: "Salary slip ready",
+              description: `${slip.month_label} slip loaded. PDF download failed.`,
+            });
+          }
+        }
+      }, 300);
     } catch (err) {
       toast({
         title: "Unable to load slip",
@@ -793,97 +881,107 @@ const Payroll: React.FC = () => {
                 <h2 className="text-xl font-semibold text-foreground">Salary Slip</h2>
                 <p className="text-sm text-muted-foreground">{selectedSlip.month_label}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
-              >
-                Print Slip
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadSlip(selectedSlip.id)}
+                  disabled={downloadingSlipId === selectedSlip.id}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-60"
+                >
+                  {downloadingSlipId === selectedSlip.id ? "Downloading..." : "Download Slip"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
+                >
+                  Print Slip
+                </button>
+              </div>
             </div>
 
-            <div className="mt-4 rounded-xl border border-border p-5 bg-background">
+            <div id="slip-content" className="mt-4 rounded-xl border border-slate-200 p-6 bg-white text-slate-900 shadow-sm">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                 <div>
-                  <p className="text-sm text-muted-foreground">Company</p>
-                  <p className="text-lg font-semibold text-foreground">{selectedSlip.company_name}</p>
+                  <p className="text-sm text-slate-500">Company</p>
+                  <p className="text-lg font-semibold text-slate-900">{selectedSlip.company_name}</p>
                 </div>
                 {selectedSlip.company_logo_url ? (
                   <img
                     src={selectedSlip.company_logo_url}
                     alt="Company logo"
-                    className="h-14 w-auto max-w-[220px] object-contain rounded-md bg-card p-1 border border-border"
+                    className="h-14 w-auto max-w-[220px] object-contain rounded-md bg-white p-1 border border-slate-200"
                   />
                 ) : (
-                  <p className="text-xs text-muted-foreground">No company logo available</p>
+                  <p className="text-xs text-slate-500">No company logo available</p>
                 )}
               </div>
 
               <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p className="text-muted-foreground">Employee</p>
-                  <p className="font-medium text-foreground">
+                  <p className="text-slate-500">Employee</p>
+                  <p className="font-medium text-slate-900">
                     {selectedSlip.employee.name} ({selectedSlip.employee.login_id})
                   </p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Department</p>
-                  <p className="font-medium text-foreground">{selectedSlip.employee.department || "--"}</p>
+                  <p className="text-slate-500">Department</p>
+                  <p className="font-medium text-slate-900">{selectedSlip.employee.department || "--"}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Employment Type</p>
-                  <p className="font-medium text-foreground">{selectedSlip.employee.employment_type || "--"}</p>
+                  <p className="text-slate-500">Employment Type</p>
+                  <p className="font-medium text-slate-900">{selectedSlip.employee.employment_type || "--"}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Payroll Status</p>
-                  <p className="font-medium text-foreground">{selectedSlip.status}</p>
+                  <p className="text-slate-500">Payroll Status</p>
+                  <p className="font-medium text-slate-900">{selectedSlip.status}</p>
                 </div>
               </div>
 
               <div className="mt-6 overflow-x-auto">
                 <table className="w-full text-sm">
-                  <tbody className="divide-y divide-border">
+                  <tbody className="divide-y divide-slate-100">
                     <tr>
-                      <td className="py-2 text-muted-foreground">Designated Salary</td>
-                      <td className="py-2 text-right font-medium text-foreground">
+                      <td className="py-2 text-slate-500">Designated Salary</td>
+                      <td className="py-2 text-right font-medium text-slate-900">
                         {formatCurrency(selectedSlip.designated_salary)}
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-2 text-muted-foreground">Total Days In Month</td>
-                      <td className="py-2 text-right font-medium text-foreground">
+                      <td className="py-2 text-slate-500">Total Days In Month</td>
+                      <td className="py-2 text-right font-medium text-slate-900">
                         {selectedSlip.total_days_in_month}
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-2 text-muted-foreground">Present Days</td>
-                      <td className="py-2 text-right font-medium text-foreground">
+                      <td className="py-2 text-slate-500">Present Days</td>
+                      <td className="py-2 text-right font-medium text-slate-900">
                         {selectedSlip.present_days}
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-2 text-muted-foreground">Half Days</td>
-                      <td className="py-2 text-right font-medium text-foreground">
+                      <td className="py-2 text-slate-500">Half Days</td>
+                      <td className="py-2 text-right font-medium text-slate-900">
                         {selectedSlip.half_days}
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-2 text-muted-foreground">Payable Days</td>
-                      <td className="py-2 text-right font-medium text-foreground">
+                      <td className="py-2 text-slate-500">Payable Days</td>
+                      <td className="py-2 text-right font-medium text-slate-900">
                         {selectedSlip.payable_days}
                       </td>
                     </tr>
                     {Number(selectedSlip.expense_amount) > 0 && (
                       <tr>
-                        <td className="py-2 text-muted-foreground">Reimbursed Expenses</td>
-                        <td className="py-2 text-right font-medium text-foreground text-green-600 dark:text-green-400">
+                        <td className="py-2 text-slate-500">Reimbursed Expenses</td>
+                        <td className="py-2 text-right font-medium text-green-600">
                           {formatCurrency(selectedSlip.expense_amount)}
                         </td>
                       </tr>
                     )}
                     <tr>
-                      <td className="py-2 text-muted-foreground">Net Salary</td>
-                      <td className="py-2 text-right text-lg font-bold text-foreground">
+                      <td className="py-2 text-slate-500">Net Salary</td>
+                      <td className="py-2 text-right text-lg font-bold text-slate-900">
                         {formatCurrency(selectedSlip.net_salary)}
                       </td>
                     </tr>
