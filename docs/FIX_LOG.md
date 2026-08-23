@@ -17,7 +17,7 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-09 | High | Stored XSS in the HTML salary slip | 🟢 Fixed | tenancy | `V09SlipXSS` |
 | V-10 | Critical | Payment grants no entitlement; verify is unauthenticated | 🟢 Fixed | billing | `V10PaymentGrantsNothing` | `V10PaymentGrantsNothing` |
 | V-11 | Medium | Login IDs predictable, globally sequential, racy | 🟢 Fixed | tenancy | `V11LoginIdCollision` |
-| V-12 | Medium | Refresh tokens accepted as WebSocket credentials | 🔴 Open | — | `V12RefreshTokenAuthenticatesWebSocket` |
+| V-12 | Medium | Refresh tokens accepted as WebSocket credentials | 🟢 Fixed | realtime | `V12RefreshTokenAuthenticatesWebSocket` |
 | V-13 | Critical | Postgres-only raw SQL; silently defaults to SQLite | 🟢 Fixed | tenancy | — |
 | V-14 | Medium | Django 4.2 is EOL and breaks on Python 3.14 | 🟢 Fixed | security baseline | — |
 | V-15 | High | `must_change_password` never enforced | 🟢 Fixed | security baseline | `V15MustChangePasswordBypass` |
@@ -45,9 +45,22 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 
 | | Critical | High | Medium | Low | Total |
 |---|---|---|---|---|---|
-| Open | 0 | 0 | 3 | 2 | **5** |
+| Open | 0 | 0 | 2 | 2 | **4** |
 | Partial | 0 | 0 | 0 | 1 | **1** |
-| Fixed | 5 | 9 | 9 | 5 | **28** |
+| Fixed | 5 | 9 | 10 | 5 | **29** |
+
+### realtime — WebSocket credentials
+
+Fixed V-12.
+
+- `AccessToken` replaces `UntypedToken`, which by design skips the `token_type` claim and so
+  accepted a seven-day refresh token as socket credentials.
+- The credential may now travel in `Sec-WebSocket-Protocol` instead of the query string, where
+  it landed in access logs, proxy logs and browser history. The query-string form still works,
+  because browsers cannot set headers on a WebSocket handshake.
+- A pending password rotation blocks the socket, matching the HTTP API.
+- Channel groups are keyed by a hash of the organization id, so a group name carries no tenant
+  data and cannot collide across renamed companies.
 
 ### billing — Stripe subscriptions in USD
 

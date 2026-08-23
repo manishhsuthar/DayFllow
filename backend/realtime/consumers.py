@@ -17,7 +17,9 @@ class CompanyUpdatesConsumer(AsyncJsonWebsocketConsumer):
 
         self.group_name = company_group_name(organization_id)
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        await self.accept()
+        # Echo the credential subprotocol back when one was used, as the handshake
+        # requires; otherwise accept plainly.
+        await self.accept(subprotocol=self.scope.get("accepted_subprotocol"))
         await self.send_json({"type": "connected"})
 
     async def disconnect(self, close_code):

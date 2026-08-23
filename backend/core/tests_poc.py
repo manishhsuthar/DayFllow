@@ -1505,14 +1505,61 @@ class V11LoginIdCollision(TestCase):
 
 
 class V12RefreshTokenAuthenticatesWebSocket(TestCase):
-    """V-12: the WS middleware still accepts a refresh token as credentials."""
+    """V-12 FIXED: only an access token authenticates a WebSocket."""
 
-    def test_refresh_token_passes_the_ws_token_check(self):
-        from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
+    def setUp(self):
+        self.org = mk_org("Acme Corp")
+        self.emp = mk_user("WSEMP", self.org)
 
-        emp = mk_user("WSEMP", mk_org("Acme Corp"))
-        validated = UntypedToken(str(RefreshToken.for_user(emp)))
-        self.assertEqual(validated["token_type"], "refresh")
+    def _resolve(self, raw):
+        from asgiref.sync import async_to_sync
+
+        from realtime.auth import get_user_for_token
+
+        return async_to_sync(get_user_for_token)(raw)
+
+    def test_a_refresh_token_is_rejected(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        user = self._resolve(str(RefreshToken.for_user(self.emp)))
+        self.assertFalse(user.is_authenticated)
+
+    def test_an_access_token_is_accepted(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        access = str(RefreshToken.for_user(self.emp).access_token)
+        user = self._resolve(access)
+        self.assertTrue(user.is_authenticated)
+        self.assertEqual(user.login_id, "WSEMP")
+
+    def test_garbage_and_empty_tokens_are_rejected(self):
+        for raw in ("", "not-a-token", "a.b.c"):
+            with self.subTest(raw=raw):
+                self.assertFalse(self._resolve(raw).is_authenticated)
+
+    def test_a_pending_password_rotation_blocks_the_socket_too(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        self.emp.must_change_password = True
+        self.emp.save(update_fields=["must_change_password"])
+        access = str(RefreshToken.for_user(self.emp).access_token)
+        self.assertFalse(self._resolve(access).is_authenticated)
+
+    def test_the_credential_can_travel_as_a_subprotocol(self):
+        from realtime.auth import SUBPROTOCOL_PREFIX, _token_from_scope
+
+        scope = {"subprotocols": [f"{SUBPROTOCOL_PREFIX}abc123"], "query_string": b""}
+        token, protocol = _token_from_scope(scope)
+        self.assertEqual(token, "abc123")
+        self.assertEqual(protocol, f"{SUBPROTOCOL_PREFIX}abc123")
+
+    def test_realtime_groups_are_per_organization(self):
+        from realtime.notifications import company_group_name
+
+        other = mk_org("Beta Co")
+        self.assertNotEqual(company_group_name(self.org.id), company_group_name(other.id))
+        # The group name carries no tenant data.
+        self.assertNotIn(self.org.slug, company_group_name(self.org.id))
 
 
 class V18SalaryExposedInDirectory(TestCase):
