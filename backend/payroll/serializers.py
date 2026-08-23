@@ -3,7 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
-from accounts.models import CompanyLogo, CustomUser
+from accounts.models import CustomUser
 from .models import EmployeeSalary, PayrollRecord
 
 
@@ -14,7 +14,9 @@ class SalaryUpsertSerializer(serializers.Serializer):
 
     def validate_employee_id(self, value):
         request = self.context["request"]
-        employee = CustomUser.objects.filter(id=value, company_name=request.user.company_name).first()
+        employee = CustomUser.objects.filter(
+            id=value, organization=request.user.organization_id
+        ).first()
         if not employee:
             raise serializers.ValidationError("Employee not found for your company.")
         if employee.role == "ADMIN":
@@ -75,7 +77,9 @@ class PayrollRunSerializer(serializers.Serializer):
 
     def validate_employee_id(self, value):
         request = self.context["request"]
-        employee = CustomUser.objects.filter(id=value, company_name=request.user.company_name).first()
+        employee = CustomUser.objects.filter(
+            id=value, organization=request.user.organization_id
+        ).first()
         if not employee:
             raise serializers.ValidationError("Employee not found for your company.")
         if employee.role == "ADMIN":
@@ -130,7 +134,7 @@ class PayrollRecordSerializer(serializers.ModelSerializer):
 
 class PayrollSlipSerializer(serializers.ModelSerializer):
     employee = serializers.SerializerMethodField()
-    company_name = serializers.CharField(source="employee.company_name", read_only=True)
+    company_name = serializers.CharField(source="employee.organization.name", read_only=True)
     company_logo_url = serializers.SerializerMethodField()
     month_label = serializers.SerializerMethodField()
 
@@ -172,8 +176,8 @@ class PayrollSlipSerializer(serializers.ModelSerializer):
         }
 
     def get_company_logo_url(self, obj):
-        logo = CompanyLogo.objects.filter(company_name=obj.employee.company_name).first()
-        return logo.logo_url if logo else ""
+        organization = obj.employee.organization
+        return organization.logo_url if organization else ""
 
     def get_month_label(self, obj):
         return obj.month.strftime("%B %Y")

@@ -9,6 +9,7 @@ from .models import Attendance
 from .utils import calculate_status
 from .serializers import AttendanceSerializer, AttendanceListSerializer
 from leave.models import LeaveRequest
+from organizations.scoping import organization_of
 
 class CheckOutAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -61,10 +62,8 @@ class AllAttendanceAPIView(APIView):
             )
 
         records = Attendance.objects.filter(
-            user__company_name=request.user.company_name
-        ).exclude(
-            user__role="ADMIN"
-        ).select_related("user")
+            user__organization=organization_of(request.user)
+        ).select_related("user", "user__organization")
         serializer = AttendanceListSerializer(records, many=True)
         return Response(serializer.data)
 

@@ -8,24 +8,27 @@ from rest_framework.test import APITestCase
 
 from accounts.models import CustomUser
 from attendance.models import Attendance
+from organizations.models import Organization
 from payroll.models import EmployeeSalary, PayrollRecord
 
 
 class PayrollFlowTests(APITestCase):
     def setUp(self):
+        self.organization = Organization.objects.create(name="Acme", slug="acme")
         self.admin = CustomUser.objects.create_user(
             email="admin@example.com",
             password="adminpass123",
             login_id="admin-login",
-            company_name="Acme",
+            organization=self.organization,
             role="ADMIN",
-            is_staff=True,
         )
+        self.organization.owner = self.admin
+        self.organization.save(update_fields=["owner"])
         self.employee = CustomUser.objects.create_user(
             email="employee@example.com",
             password="emppass123",
             login_id="emp-login",
-            company_name="Acme",
+            organization=self.organization,
             role="EMP",
         )
 
@@ -37,7 +40,7 @@ class PayrollFlowTests(APITestCase):
             {
                 "employee_id": self.employee.id,
                 "monthly_salary": "30000.00",
-                "currency": "INR",
+                "currency": "USD",
             },
             format="json",
         )
@@ -76,7 +79,7 @@ class PayrollFlowTests(APITestCase):
         salary = EmployeeSalary.objects.create(
             employee=self.employee,
             monthly_salary=Decimal("20000.00"),
-            currency="INR",
+            currency="USD",
             set_by=self.admin,
             updated_by=self.admin,
         )
@@ -109,7 +112,7 @@ class PayrollFlowTests(APITestCase):
         salary = EmployeeSalary.objects.create(
             employee=self.employee,
             monthly_salary=Decimal("30000.00"),
-            currency="INR",
+            currency="USD",
             set_by=self.admin,
             updated_by=self.admin,
         )

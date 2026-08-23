@@ -1,27 +1,35 @@
 from django.contrib import admin
-from .models import CompanyConfig, CompanyLogo, CustomUser
+from django.contrib.auth.admin import UserAdmin
+
+from .models import CustomUser
+
 
 @admin.register(CustomUser)
-class UserAdmin(admin.ModelAdmin):
-    list_display = (
-        "login_id",
-        "email",
-        "role",
-        "is_active",
-        "is_staff",
-        "must_change_password",
+class CustomUserAdmin(UserAdmin):
+    ordering = ("login_id",)
+    list_display = ("login_id", "email", "organization", "role", "is_active", "is_approved")
+    list_filter = ("role", "is_active", "is_approved", "organization")
+    search_fields = ("login_id", "email", "first_name", "last_name")
+    readonly_fields = ("created_at", "updated_at", "last_login")
+    fieldsets = (
+        (None, {"fields": ("login_id", "email", "password")}),
+        ("Personal", {"fields": ("first_name", "last_name")}),
+        (
+            "Organization",
+            {"fields": ("organization", "role", "department", "employment_type", "date_of_joining")},
+        ),
+        (
+            "Status",
+            {"fields": ("is_active", "is_approved", "must_change_password", "is_staff", "is_superuser")},
+        ),
+        ("Timestamps", {"fields": ("last_login", "created_at", "updated_at")}),
     )
-    search_fields = ("login_id", "email")
-    list_filter = ("role", "is_active")
-
-
-@admin.register(CompanyConfig)
-class CompanyConfigAdmin(admin.ModelAdmin):
-    list_display = ("company_name", "updated_at")
-    search_fields = ("company_name",)
-
-
-@admin.register(CompanyLogo)
-class CompanyLogoAdmin(admin.ModelAdmin):
-    list_display = ("company_name", "logo_url", "updated_at")
-    search_fields = ("company_name",)
+    add_fieldsets = (
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": ("login_id", "email", "password1", "password2", "organization", "role"),
+            },
+        ),
+    )

@@ -10,12 +10,12 @@ class CompanyUpdatesConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4401)
             return
 
-        company_name = getattr(user, "company_name", "")
-        if not company_name:
+        organization_id = getattr(user, "organization_id", None)
+        if not organization_id:
             await self.close(code=4403)
             return
 
-        self.group_name = company_group_name(company_name)
+        self.group_name = company_group_name(organization_id)
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
         await self.send_json({"type": "connected"})

@@ -16,6 +16,7 @@ class CustomUserManager(BaseUserManager):
 
         email = self.normalize_email(email)
         extra_fields.setdefault("login_id", email)
+        extra_fields.setdefault("is_active", True)
         user = self.model(
             email=email,
             **extra_fields
@@ -48,13 +49,22 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     first_name = models.CharField(max_length=50, blank=True)
     last_name = models.CharField(max_length=50, blank=True)
-    company_name = models.CharField(max_length=150, blank=True, default="")
+
+    #: The tenant boundary. Every tenant-scoped query filters on this FK.
+    #: It replaces the free-text `company_name` that let anyone join an existing
+    #: customer's tenant by typing its name at signup (audit V-01).
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="members",
+    )
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default="EMP")
     date_of_joining = models.DateField(default=date.today)
     department = models.CharField(max_length=100, blank=True, default="")
     employment_type = models.CharField(max_length=50, blank=True, default="")
-    salary = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     must_change_password = models.BooleanField(default=False)
     is_approved = models.BooleanField(default=True)
@@ -70,56 +80,15 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "login_id"
     REQUIRED_FIELDS = ["email"]
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "role"]),
+            models.Index(fields=["organization", "is_active"]),
+        ]
+
     def __str__(self):
         return self.login_id
 
-
-class CompanyConfig(models.Model):
-    company_name = models.CharField(max_length=150, unique=True, db_index=True)
-    departments = models.JSONField(default=list, blank=True)
-    roles = models.JSONField(default=list, blank=True)
-    employment_types = models.JSONField(default=list, blank=True)
-    bypass_attendance = models.BooleanField(default=False)
-    created_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="company_configs_created",
-    )
-    updated_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="company_configs_updated",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.company_name} configuration"
-
-
-class CompanyLogo(models.Model):
-    company_name = models.CharField(max_length=150, unique=True, db_index=True)
-    logo_url = models.URLField(max_length=500)
-    created_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="company_logos_created",
-    )
-    updated_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="company_logos_updated",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.company_name} logo"
+    @property
+    def full_name(self):
+        return f"{self.first_name} {self.last_name}".strip() or self.login_id

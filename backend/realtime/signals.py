@@ -1,7 +1,8 @@
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from accounts.models import CompanyConfig, CompanyLogo, CustomUser
+from accounts.models import CustomUser
+from organizations.models import Organization
 from attendance.models import Attendance
 from leave.models import LeaveRequest
 from payroll.models import EmployeeSalary, PayrollRecord
@@ -10,8 +11,7 @@ from .notifications import broadcast_data_change
 
 WATCHED_MODELS = (
     CustomUser,
-    CompanyConfig,
-    CompanyLogo,
+    Organization,
     Attendance,
     LeaveRequest,
     EmployeeSalary,

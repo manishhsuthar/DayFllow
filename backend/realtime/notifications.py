@@ -6,29 +6,37 @@ from django.db import transaction
 from django.utils import timezone
 
 
-def company_group_name(company_name):
-    digest = hashlib.sha256(company_name.encode("utf-8")).hexdigest()[:32]
-    return f"company_updates_{digest}"
+def company_group_name(organization_id):
+    """Channel group for one organization.
+
+    Hashed rather than used directly so the group name never carries tenant data,
+    and so it always satisfies the channel-name charset.
+    """
+    digest = hashlib.sha256(str(organization_id).encode("utf-8")).hexdigest()[:32]
+    return f"org_updates_{digest}"
 
 
-def get_instance_company_name(instance):
-    if hasattr(instance, "company_name"):
-        return instance.company_name
+def get_instance_organization_id(instance):
+    """Resolve the owning organization for any tenant-scoped model."""
+    if hasattr(instance, "organization_id"):
+        return instance.organization_id
 
-    user = getattr(instance, "user", None)
-    if user is not None:
-        return getattr(user, "company_name", "")
+    for attr in ("user", "employee", "owner"):
+        related = getattr(instance, attr, None)
+        if related is not None:
+            organization_id = getattr(related, "organization_id", None)
+            if organization_id:
+                return organization_id
 
-    employee = getattr(instance, "employee", None)
-    if employee is not None:
-        return getattr(employee, "company_name", "")
+    if instance.__class__.__name__ == "Organization":
+        return instance.pk
 
-    return ""
+    return None
 
 
 def broadcast_data_change(instance, action):
-    company_name = get_instance_company_name(instance)
-    if not company_name:
+    organization_id = get_instance_organization_id(instance)
+    if not organization_id:
         return
 
     channel_layer = get_channel_layer()
@@ -45,7 +53,7 @@ def broadcast_data_change(instance, action):
 
     def send_update():
         async_to_sync(channel_layer.group_send)(
-            company_group_name(company_name),
+            company_group_name(organization_id),
             {
                 "type": "database.change",
                 "payload": payload,

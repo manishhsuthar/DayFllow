@@ -8,6 +8,7 @@ from attendance.models import Attendance
 from leave.models import LeaveRequest
 from accounts.models import CustomUser
 from payroll.models import PayrollRecord
+from organizations.scoping import organization_of
 
 class EmployeeDashboardAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -60,29 +61,29 @@ class AdminDashboardAPIView(APIView):
 
         data = {
             "total_employees": CustomUser.objects.filter(
-                company_name=request.user.company_name
+                organization=organization_of(request.user)
             ).exclude(role="ADMIN").count(),
             "present_today": Attendance.objects.filter(
                 date=today,
                 status="PRESENT",
-                user__company_name=request.user.company_name,
+                user__organization=organization_of(request.user),
             ).count(),
             "absent_today": Attendance.objects.filter(
                 date=today,
                 status="ABSENT",
-                user__company_name=request.user.company_name,
+                user__organization=organization_of(request.user),
             ).count(),
             "on_leave_today": Attendance.objects.filter(
                 date=today,
                 status="LEAVE",
-                user__company_name=request.user.company_name,
+                user__organization=organization_of(request.user),
             ).count(),
             "pending_leaves": LeaveRequest.objects.filter(
                 status="PENDING",
-                user__company_name=request.user.company_name,
+                user__organization=organization_of(request.user),
             ).count(),
             "pending_payrolls": PayrollRecord.objects.filter(
-                employee__company_name=request.user.company_name,
+                employee__organization=organization_of(request.user),
                 status="PENDING",
             ).count(),
         }
@@ -118,7 +119,7 @@ class DashboardNotificationsAPIView(APIView):
 
         if user.role in ["ADMIN", "HR"]:
             pending_payrolls = PayrollRecord.objects.filter(
-                employee__company_name=user.company_name,
+                employee__organization=organization_of(user),
                 status="PENDING",
             ).count()
             if pending_payrolls > 0:
@@ -135,7 +136,7 @@ class DashboardNotificationsAPIView(APIView):
 
             pending_leaves = LeaveRequest.objects.filter(
                 status="PENDING",
-                user__company_name=user.company_name,
+                user__organization=organization_of(user),
             ).count()
             if pending_leaves > 0:
                 items.append(
@@ -150,7 +151,7 @@ class DashboardNotificationsAPIView(APIView):
                 )
 
             latest_leaves = LeaveRequest.objects.filter(
-                user__company_name=user.company_name,
+                user__organization=organization_of(user),
             ).select_related("user").order_by("-created_at")[:3]
             for leave in latest_leaves:
                 name = (

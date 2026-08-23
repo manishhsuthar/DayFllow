@@ -3,6 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from django.http import HttpResponse
+from django.template.loader import render_to_string
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -11,8 +12,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.models import CompanyLogo
 from attendance.models import Attendance
+from organizations.scoping import organization_of
 from .models import EmployeeSalary, PayrollRecord
 from .serializers import (
     EmployeeSalarySerializer,
@@ -60,10 +61,8 @@ def _attendance_month_stats(employee, payroll_month):
 def _compute_payroll_for_employee(employee, salary, payroll_month):
     days_in_month = calendar.monthrange(payroll_month.year, payroll_month.month)[1]
     
-    from accounts.models import CompanyConfig
-    config = CompanyConfig.objects.filter(company_name=employee.company_name).first()
-    
-    if config and config.bypass_attendance:
+    organization = employee.organization
+    if organization and organization.bypass_attendance:
         attendance = {
             "attendance_entries": days_in_month,
             "present_days": days_in_month,
@@ -103,7 +102,7 @@ def _get_accessible_payroll(user, payroll_id):
     if _is_payroll_manager(user):
         return queryset.filter(
             id=payroll_id,
-            employee__company_name=user.company_name,
+            employee__organization=organization_of(user),
         ).first()
     return queryset.filter(id=payroll_id, employee=user).first()
 
@@ -114,7 +113,7 @@ class EmployeeSalaryAPIView(APIView):
     def get(self, request):
         if _is_payroll_manager(request.user):
             salaries = EmployeeSalary.objects.filter(
-                employee__company_name=request.user.company_name
+                employee__organization=organization_of(request.user)
             ).select_related("employee")
             return Response(EmployeeSalarySerializer(salaries, many=True).data)
 
@@ -171,7 +170,7 @@ class PayrollRunAPIView(APIView):
         force_recompute = serializer.validated_data.get("force_recompute", False)
 
         salaries = EmployeeSalary.objects.filter(
-            employee__company_name=request.user.company_name
+            employee__organization=organization_of(request.user)
         ).select_related("employee")
         if employee_id:
             salaries = salaries.filter(employee_id=employee_id)
@@ -245,7 +244,7 @@ class PayrollListAPIView(APIView):
 
         queryset = PayrollRecord.objects.select_related("employee", "salary")
         if _is_payroll_manager(request.user):
-            queryset = queryset.filter(employee__company_name=request.user.company_name)
+            queryset = queryset.filter(employee__organization=organization_of(request.user))
         else:
             queryset = queryset.filter(employee=request.user)
 
@@ -284,7 +283,7 @@ class PayrollCreditAPIView(APIView):
 
         payroll = PayrollRecord.objects.filter(
             id=payroll_id,
-            employee__company_name=request.user.company_name,
+            employee__organization=organization_of(request.user),
         ).select_related("employee").first()
         if not payroll:
             return Response({"detail": "Payroll record not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -335,66 +334,31 @@ class PayrollSlipHTMLAPIView(APIView):
     def get(self, request, payroll_id):
         payroll = _get_accessible_payroll(request.user, payroll_id)
         if not payroll:
-            return Response({"detail": "Payroll record not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Payroll record not found."}, status=status.HTTP_404_NOT_FOUND
+            )
 
-        employee_name = f"{payroll.employee.first_name} {payroll.employee.last_name}".strip() or payroll.employee.login_id
-        month_label = payroll.month.strftime("%B %Y")
-        logo = CompanyLogo.objects.filter(company_name=payroll.employee.company_name).first()
-        logo_html = (
-            f'<img src="{logo.logo_url}" alt="Company logo" style="height:56px;max-width:220px;object-fit:contain;" />'
-            if logo
-            else "<div style=\"font-size:14px;color:#64748b;\">No company logo configured</div>"
+        organization = payroll.employee.organization
+        html = render_to_string(
+            "payroll/salary_slip.html",
+            {
+                "payroll": payroll,
+                "organization": organization,
+                "employee_name": payroll.employee.full_name,
+                "month_label": payroll.month.strftime("%B %Y"),
+                "currency_symbol": "$",
+            },
         )
-
-        html = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Salary Slip - {month_label}</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; color: #111827; margin: 24px; }}
-    .card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; max-width: 720px; }}
-    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }}
-    h1 {{ margin: 0; font-size: 22px; }}
-    .muted {{ color: #6b7280; }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
-    td {{ border-top: 1px solid #f1f5f9; padding: 8px 0; font-size: 14px; }}
-    td:last-child {{ text-align: right; font-weight: 600; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="header">
-      <div>
-        <h1>Salary Slip</h1>
-        <div class="muted">{month_label}</div>
-      </div>
-      {logo_html}
-    </div>
-
-    <div style="margin-bottom: 12px;">
-      <div><strong>Company:</strong> {payroll.employee.company_name}</div>
-      <div><strong>Employee:</strong> {employee_name} ({payroll.employee.login_id})</div>
-      <div><strong>Status:</strong> {payroll.status}</div>
-    </div>
-
-    <table>
-      <tr><td>Designated Monthly Salary</td><td>{payroll.designated_salary}</td></tr>
-      <tr><td>Total Days in Month</td><td>{payroll.total_days_in_month}</td></tr>
-      <tr><td>Present Days</td><td>{payroll.present_days}</td></tr>
-      <tr><td>Half Days</td><td>{payroll.half_days}</td></tr>
-      <tr><td>Payable Days</td><td>{payroll.payable_days}</td></tr>
-      <tr><td>Reimbursed Expenses</td><td>{payroll.expense_amount}</td></tr>
-      <tr><td>Net Salary</td><td>{payroll.net_salary}</td></tr>
-    </table>
-  </div>
-</body>
-</html>
-"""
         response = HttpResponse(html)
+        # The slip is served from the API origin and renders tenant-supplied data,
+        # so it gets its own restrictive CSP on top of template autoescaping.
+        response["Content-Security-Policy"] = (
+            "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'"
+        )
+        response["X-Content-Type-Options"] = "nosniff"
         if request.GET.get("download") == "true":
-            response["Content-Disposition"] = f'attachment; filename="salary_slip_{payroll.employee.login_id}_{payroll.month.strftime("%Y-%m")}.html"'
+            filename = f"salary_slip_{payroll.employee.login_id}_{payroll.month:%Y-%m}.html"
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 
 
@@ -418,7 +382,9 @@ class AddExpenseAPIView(APIView):
         if employee_id:
             if not _is_payroll_manager(request.user):
                 return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
-            employee = CustomUser.objects.filter(id=employee_id, company_name=request.user.company_name).first()
+            employee = CustomUser.objects.filter(
+                id=employee_id, organization=organization_of(request.user)
+            ).first()
             if not employee:
                 return Response({"detail": "Employee not found."}, status=status.HTTP_404_NOT_FOUND)
         else:

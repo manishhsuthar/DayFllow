@@ -1,0 +1,65 @@
+{% comment %}
+Salary slip.
+
+This page used to be built with an f-string and no escaping, so the tenant's own
+company name and logo URL were injected raw into the document -- a company name
+of `"><script>...</script>` executed, and the logo URL escaped its attribute
+without needing a script tag at all (audit V-09). Django templates autoescape.
+{% endcomment %}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'" />
+  <title>Salary Slip &ndash; {{ month_label }}</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 24px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; max-width: 720px; }
+    .header { display: flex; justify-content: space-between; align-items: center;
+              gap: 16px; margin-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .logo { height: 56px; max-width: 220px; object-fit: contain; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    td { border-top: 1px solid #f1f5f9; padding: 8px 0; font-size: 14px; }
+    td:last-child { text-align: right; font-weight: 600; }
+    tr.total td { border-top: 2px solid #111827; font-size: 16px; padding-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div>
+        <h1>Salary Slip</h1>
+        <div class="muted">{{ month_label }}</div>
+      </div>
+      {% if organization.logo_url %}
+        <img class="logo" src="{{ organization.logo_url }}" alt="{{ organization.name }} logo" />
+      {% else %}
+        <div class="muted">No company logo configured</div>
+      {% endif %}
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <div><strong>Company:</strong> {{ organization.name|default:"—" }}</div>
+      <div><strong>Employee:</strong> {{ employee_name }} ({{ payroll.employee.login_id }})</div>
+      <div><strong>Status:</strong> {{ payroll.get_status_display }}</div>
+      {% if payroll.credited_at %}
+        <div><strong>Credited:</strong> {{ payroll.credited_at|date:"j M Y, H:i" }} UTC</div>
+      {% endif %}
+    </div>
+
+    <table>
+      <tr><td>Designated Monthly Salary</td><td>{{ currency_symbol }}{{ payroll.designated_salary }}</td></tr>
+      <tr><td>Total Days in Month</td><td>{{ payroll.total_days_in_month }}</td></tr>
+      <tr><td>Present Days</td><td>{{ payroll.present_days }}</td></tr>
+      <tr><td>Half Days</td><td>{{ payroll.half_days }}</td></tr>
+      <tr><td>Leave Days</td><td>{{ payroll.leave_days }}</td></tr>
+      <tr><td>Payable Days</td><td>{{ payroll.payable_days }}</td></tr>
+      <tr><td>Deducted Expenses</td><td>&minus;{{ currency_symbol }}{{ payroll.expense_amount }}</td></tr>
+      <tr class="total"><td>Net Salary</td><td>{{ currency_symbol }}{{ payroll.net_salary }}</td></tr>
+    </table>
+  </div>
+</body>
+</html>

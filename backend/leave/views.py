@@ -8,6 +8,7 @@ from datetime import timedelta, date
 from .models import LeaveRequest
 from .serializers import LeaveRequestSerializer
 from attendance.models import Attendance
+from organizations.scoping import organization_of
 
 #Employee applies for leave
 class ApplyLeaveAPIView(APIView):
@@ -60,10 +61,8 @@ class AllLeavesAPIView(APIView):
             )
 
         leaves = LeaveRequest.objects.filter(
-            user__company_name=request.user.company_name
-        ).exclude(
-            user__role="ADMIN"
-        ).select_related("user")
+            user__organization=organization_of(request.user)
+        ).select_related("user", "user__organization")
         serializer = LeaveRequestSerializer(leaves, many=True)
         return Response(serializer.data)
 
@@ -88,8 +87,8 @@ class ApproveRejectLeaveAPIView(APIView):
 
         leave = LeaveRequest.objects.filter(
             id=leave_id,
-            user__company_name=request.user.company_name,
-        ).first()
+            user__organization=organization_of(request.user),
+        ).select_related("user").first()
         if not leave:
             return Response(
                 {"detail": "Leave request not found"},
