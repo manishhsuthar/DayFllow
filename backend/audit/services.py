@@ -9,11 +9,22 @@ logger = logging.getLogger("dayflow.audit")
 
 
 def _jsonable(value):
+    """Coerce a value into something the JSONField will accept.
+
+    Recurses: change maps are nested as {"field": {"from": x, "to": y}}, and x/y
+    are routinely Decimals and datetimes.
+    """
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
     if hasattr(value, "isoformat"):
         return value.isoformat()
-    return value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def record(*, organization, actor, action, target=None, changes=None, label=""):

@@ -15,7 +15,7 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-07 | High | Employees post unlimited expenses against own salary | 🟢 Fixed | payroll/audit | `V07EmployeeSelfExpense` |
 | V-08 | Medium | Payroll can compute a negative net salary | 🟢 Fixed | payroll/audit | `V08NegativeNetSalary` |
 | V-09 | High | Stored XSS in the HTML salary slip | 🟢 Fixed | tenancy | `V09SlipXSS` |
-| V-10 | Critical | Payment grants no entitlement; verify is unauthenticated | 🔴 Open | — | `V10PaymentGrantsNothing` |
+| V-10 | Critical | Payment grants no entitlement; verify is unauthenticated | 🟢 Fixed | billing | `V10PaymentGrantsNothing` | `V10PaymentGrantsNothing` |
 | V-11 | Medium | Login IDs predictable, globally sequential, racy | 🟢 Fixed | tenancy | `V11LoginIdCollision` |
 | V-12 | Medium | Refresh tokens accepted as WebSocket credentials | 🔴 Open | — | `V12RefreshTokenAuthenticatesWebSocket` |
 | V-13 | Critical | Postgres-only raw SQL; silently defaults to SQLite | 🟢 Fixed | tenancy | — |
@@ -39,15 +39,40 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-31 | Low | Electron opens DevTools in production builds | 🔴 Open | — | — |
 | V-32 | Low | Vite dev proxy disables TLS verification | 🔴 Open | — | — |
 | V-33 | Low | No Content-Security-Policy | 🔴 Open | — | — |
-| V-34 | Low | Repository hygiene; committed Razorpay secret | 🟡 Partial | security baseline | — |
+| V-34 | Low | Repository hygiene; committed Razorpay secret | 🟡 Partial | billing | — |
 
 ## Progress
 
 | | Critical | High | Medium | Low | Total |
 |---|---|---|---|---|---|
-| Open | 1 | 0 | 3 | 2 | **6** |
+| Open | 0 | 0 | 3 | 2 | **5** |
 | Partial | 0 | 0 | 0 | 1 | **1** |
-| Fixed | 4 | 9 | 9 | 5 | **27** |
+| Fixed | 5 | 9 | 9 | 5 | **28** |
+
+### billing — Stripe subscriptions in USD
+
+Fixes V-10; removes the last of the Razorpay code behind V-34.
+
+- `Plan`, `Subscription` and `WebhookEvent` replace an endpoint that returned
+  `{"message": "Payment verified successfully."}` and wrote nothing. Three USD plans seeded by
+  `manage.py seed_plans`: Starter $19 (10 seats), Growth $49 (50 seats), Enterprise $149
+  (unlimited). Amounts are integer cents throughout — floats do not represent money.
+- **Stripe is the source of truth.** The browser can only ask for a Checkout session; what was
+  actually bought arrives by signature-verified webhook. There is no client-callable "verify
+  payment" endpoint any more, so a forged POST cannot grant a subscription.
+- Webhooks are idempotent via `WebhookEvent`: Stripe retries on any non-2xx and can deliver the
+  same event twice. A handler fault returns 500 so Stripe retries; a duplicate returns 200 and
+  does nothing.
+- An unrecognised Stripe status maps to `incomplete` and is logged, so a status we have never
+  seen can never silently become an entitlement.
+- **Entitlement is enforced.** Signup starts a real 14-day trial subscription, so `is_entitled`
+  is the single question asked everywhere rather than "has checkout happened?". Lapsed
+  subscriptions block *creating new work* but never block reading, exporting, or reaching
+  billing — a customer with an expired card can still see their payroll and fix their card.
+  `past_due` stays entitled for the same reason.
+- Seat limits are enforced on hiring and on reactivating; deactivating frees a seat.
+- All subscription transitions are written to the audit log with before/after values.
+- Card details never touch this server: Checkout and the billing portal are Stripe-hosted.
 
 ### payroll/audit — money and accountability
 

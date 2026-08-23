@@ -16,6 +16,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.models import CustomUser
 from accounts.permissions import IsManagement
 from audit.models import AuditLog
+from billing.permissions import HasActiveSubscription, HasSeatAvailable
 from audit.services import record
 
 from .serializers import ChangePasswordSerializer, CreateEmployeeSerializer, LoginSerializer
@@ -222,7 +223,12 @@ class PasswordResetConfirmAPIView(APIView):
 
 
 class CreateEmployeeAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsManagement]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagement,
+        HasActiveSubscription,
+        HasSeatAvailable,
+    ]
 
     def post(self, request):
         serializer = CreateEmployeeSerializer(data=request.data, context={"request": request})

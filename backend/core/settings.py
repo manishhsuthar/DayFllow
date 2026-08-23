@@ -145,6 +145,7 @@ INSTALLED_APPS = [
     "leave",
     "dashboard",
     "payroll",
+    "billing",
     "audit",
     "realtime",
 ]
@@ -340,13 +341,6 @@ if not BILLING_ENABLED and not DEBUG and not env_bool("DJANGO_ALLOW_UNCONFIGURED
         "STRIPE_SECRET_KEY must be set when DJANGO_DEBUG is off. Set "
         "DJANGO_ALLOW_UNCONFIGURED_BILLING=true to run without billing deliberately."
     )
-
-
-# Razorpay: DEPRECATED, replaced by the Stripe billing app. Retained only so the
-# existing INR checkout keeps working until that lands. The previous values were
-# live API keys committed in plaintext (audit V-34) and must be rotated.
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 
 
 # ---------------------------------------------------------------------------

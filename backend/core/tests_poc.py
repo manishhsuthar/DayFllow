@@ -7,6 +7,7 @@ demonstrates a live defect and is expected to pass until its fix lands.
     python manage.py test core.tests_poc -v2
 """
 
+import json
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from decimal import Decimal
@@ -174,14 +175,330 @@ class V03LoginBackdoor(TestCase):
 
 
 class V10PaymentGrantsNothing(TestCase):
-    """V-10: paying still grants no entitlement -- no Plan or Subscription exists."""
+    """V-10 FIXED: subscriptions are real, Stripe-driven, and actually gate the product."""
 
-    def test_no_subscription_model_exists_yet(self):
-        from django.apps import apps
+    def setUp(self):
+        from billing.models import Plan
 
-        names = {m.__name__ for m in apps.get_models()}
-        self.assertNotIn("Subscription", names)
-        self.assertNotIn("Plan", names)
+        self.plan = Plan.objects.create(
+            code="starter",
+            name="Starter",
+            amount_cents=1900,
+            currency="usd",
+            seat_limit=2,
+            stripe_price_id="price_test_starter",
+            is_default=True,
+        )
+        self.big_plan = Plan.objects.create(
+            code="growth",
+            name="Growth",
+            amount_cents=4900,
+            currency="usd",
+            seat_limit=50,
+            stripe_price_id="price_test_growth",
+        )
+
+    def test_signup_creates_a_trial_subscription(self):
+        from billing.models import Subscription
+
+        resp = signup(company_name="Trial Co", email="trial@new.test")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        subscription = Subscription.objects.get()
+        self.assertEqual(subscription.status, Subscription.Status.TRIALING)
+        self.assertEqual(subscription.plan, self.plan)
+        self.assertTrue(subscription.is_entitled)
+        self.assertIsNotNone(subscription.trial_end)
+
+    def test_prices_are_usd_integer_cents(self):
+        resp = APIClient().get("/api/billing/plans/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["currency"], "usd")
+        starter = next(p for p in resp.data["plans"] if p["code"] == "starter")
+        self.assertEqual(starter["amount_cents"], 1900)
+        self.assertEqual(starter["price_display"], "$19.00")
+        self.assertEqual(starter["currency"], "usd")
+
+    def test_an_expired_trial_blocks_new_work_but_not_reading(self):
+        from billing.models import Subscription
+
+        org = mk_org("Lapsed Co")
+        admin = mk_user("LAPSEDADMIN", org, role="ADMIN")
+        org.owner = admin
+        org.save()
+        Subscription.objects.create(
+            organization=org,
+            plan=self.plan,
+            status=Subscription.Status.TRIALING,
+            trial_end=timezone.now() - timedelta(days=1),
+        )
+        client = auth(admin)
+
+        # Reading still works: a lapsed customer must be able to see and export
+        # their own data, and reach billing to fix it.
+        self.assertEqual(client.get("/api/accounts/employees/").status_code, 200)
+        self.assertEqual(client.get("/api/billing/subscription/").status_code, 200)
+
+        resp = client.post(
+            "/api/auth/create-employee/",
+            {
+                "first_name": "New",
+                "last_name": "Hire",
+                "email": "newhire@lapsed.test",
+                "role": "EMP",
+                "date_of_joining": str(date.today()),
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("subscription is not active", str(resp.data).lower())
+
+    def test_a_canceled_subscription_is_not_entitled(self):
+        from billing.models import Subscription
+
+        org = mk_org("Cancelled Co")
+        admin = mk_user("CANCADMIN", org, role="ADMIN")
+        subscription = Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.CANCELED
+        )
+        self.assertFalse(subscription.is_entitled)
+
+    def test_past_due_still_works_so_a_failed_card_does_not_lock_payroll(self):
+        from billing.models import Subscription
+
+        org = mk_org("PastDue Co")
+        subscription = Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.PAST_DUE
+        )
+        self.assertTrue(subscription.is_entitled)
+
+    def test_seat_limits_are_enforced(self):
+        from billing.models import Subscription
+
+        org = mk_org("Seated Co")
+        admin = mk_user("SEATADMIN", org, role="ADMIN")
+        org.owner = admin
+        org.save()
+        Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.ACTIVE
+        )
+        client = auth(admin)
+
+        def hire(n):
+            return client.post(
+                "/api/auth/create-employee/",
+                {
+                    "first_name": "Emp",
+                    "last_name": f"N{n}",
+                    "email": f"emp{n}@seated.test",
+                    "role": "EMP",
+                    "date_of_joining": str(date.today()),
+                },
+                format="json",
+            )
+
+        # The plan allows two seats; admins do not consume one.
+        self.assertEqual(hire(1).status_code, 201)
+        self.assertEqual(hire(2).status_code, 201)
+        third = hire(3)
+        self.assertEqual(third.status_code, 403)
+        self.assertIn("seat", str(third.data).lower())
+
+    def test_deactivating_frees_a_seat(self):
+        from billing.models import Subscription
+
+        org = mk_org("Freed Co")
+        admin = mk_user("FREEDADMIN", org, role="ADMIN")
+        org.owner = admin
+        org.save()
+        Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.ACTIVE
+        )
+        a = mk_user("FREEDA", org)
+        mk_user("FREEDB", org)
+        client = auth(admin)
+
+        payload = {
+            "first_name": "Third",
+            "last_name": "Hire",
+            "email": "third@freed.test",
+            "role": "EMP",
+            "date_of_joining": str(date.today()),
+        }
+        self.assertEqual(client.post("/api/auth/create-employee/", payload, format="json").status_code, 403)
+
+        client.delete(f"/api/accounts/employees/{a.id}/")
+        self.assertEqual(client.post("/api/auth/create-employee/", payload, format="json").status_code, 201)
+
+    def test_checkout_is_owner_only(self):
+        org = mk_org("Checkout Co")
+        admin = mk_user("COADMIN", org, role="ADMIN")
+        hr = mk_user("COHR", org, role="HR")
+        for user, expected in ((hr, 403), (admin, 503)):
+            resp = auth(user).post(
+                "/api/billing/checkout/", {"plan_code": "starter"}, format="json"
+            )
+            # 503 because Stripe is unconfigured in tests -- the point is that the
+            # owner gets past the permission check and HR does not.
+            self.assertEqual(resp.status_code, expected)
+
+    def test_the_browser_cannot_grant_itself_a_subscription(self):
+        """There is no client-callable 'verify payment' endpoint any more."""
+        org = mk_org("Forge Co")
+        admin = mk_user("FORGEADMIN", org, role="ADMIN")
+        client = auth(admin)
+        for path in (
+            "/api/accounts/payments/razorpay/verify/",
+            "/api/accounts/payments/razorpay/create-order/",
+        ):
+            self.assertEqual(client.post(path, {}, format="json").status_code, 404, path)
+
+    def test_webhooks_require_a_valid_signature(self):
+        resp = APIClient().post(
+            "/api/billing/webhook/",
+            data=json.dumps({"id": "evt_forged", "type": "checkout.session.completed"}),
+            content_type="application/json",
+        )
+        self.assertIn(resp.status_code, (400, 503))
+        from billing.models import Subscription
+
+        self.assertFalse(
+            Subscription.objects.filter(status=Subscription.Status.ACTIVE).exists()
+        )
+
+    def test_a_verified_webhook_activates_the_subscription(self):
+        from unittest.mock import patch as _patch
+
+        from billing.models import Subscription, WebhookEvent
+
+        org = mk_org("Paying Co")
+        mk_user("PAYADMIN", org, role="ADMIN")
+        subscription = Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.TRIALING
+        )
+
+        period_end = int((timezone.now() + timedelta(days=30)).timestamp())
+        stripe_subscription = {
+            "id": "sub_test_123",
+            "status": "active",
+            "customer": "cus_test_123",
+            "current_period_end": period_end,
+            "trial_end": None,
+            "cancel_at_period_end": False,
+            "canceled_at": None,
+            "items": {"data": [{"price": {"id": "price_test_growth"}}]},
+            "metadata": {"organization_id": str(org.id), "plan_code": "growth"},
+        }
+        event = {
+            "id": "evt_test_1",
+            "type": "customer.subscription.updated",
+            "data": {"object": stripe_subscription},
+        }
+
+        with _patch("billing.stripe_gateway.construct_event", return_value=event):
+            resp = APIClient().post(
+                "/api/billing/webhook/",
+                data=json.dumps({}),
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="t=1,v1=stub",
+            )
+        if resp.status_code != 200:
+            self.fail(WebhookEvent.objects.get(stripe_event_id="evt_test_1").error)
+
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, Subscription.Status.ACTIVE)
+        self.assertEqual(subscription.plan, self.big_plan)
+        self.assertEqual(subscription.stripe_subscription_id, "sub_test_123")
+        self.assertTrue(subscription.is_entitled)
+        self.assertTrue(WebhookEvent.objects.get(stripe_event_id="evt_test_1").processed_at)
+
+    def test_a_replayed_webhook_is_processed_once(self):
+        from unittest.mock import patch as _patch
+
+        from billing.models import Subscription, WebhookEvent
+
+        org = mk_org("Replay Co")
+        Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.TRIALING
+        )
+        event = {
+            "id": "evt_replay",
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_replay",
+                    "status": "active",
+                    "customer": "cus_replay",
+                    "current_period_end": int(timezone.now().timestamp()),
+                    "items": {"data": [{"price": {"id": "price_test_starter"}}]},
+                    "metadata": {"organization_id": str(org.id)},
+                }
+            },
+        }
+        with _patch("billing.stripe_gateway.construct_event", return_value=event):
+            for _ in range(3):
+                resp = APIClient().post(
+                    "/api/billing/webhook/",
+                    data=json.dumps({}),
+                    content_type="application/json",
+                    HTTP_STRIPE_SIGNATURE="t=1,v1=stub",
+                )
+                self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(WebhookEvent.objects.filter(stripe_event_id="evt_replay").count(), 1)
+
+    def test_an_unknown_stripe_status_never_becomes_an_entitlement(self):
+        from billing.models import Subscription
+        from billing.services import apply_stripe_subscription
+
+        org = mk_org("Unknown Co")
+        subscription = Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.ACTIVE
+        )
+        apply_stripe_subscription(
+            subscription,
+            {"id": "sub_x", "status": "some_new_stripe_status", "customer": "cus_x"},
+        )
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, Subscription.Status.INCOMPLETE)
+        self.assertFalse(subscription.is_entitled)
+
+    def test_subscription_changes_are_audited(self):
+        from unittest.mock import patch as _patch
+
+        from audit.models import AuditLog
+        from billing.models import Subscription
+
+        org = mk_org("Audited Co")
+        Subscription.objects.create(
+            organization=org, plan=self.plan, status=Subscription.Status.TRIALING
+        )
+        event = {
+            "id": "evt_audit",
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_audit",
+                    "status": "active",
+                    "customer": "cus_audit",
+                    "current_period_end": int(timezone.now().timestamp()),
+                    "items": {"data": [{"price": {"id": "price_test_growth"}}]},
+                    "metadata": {"organization_id": str(org.id)},
+                }
+            },
+        }
+        with _patch("billing.stripe_gateway.construct_event", return_value=event):
+            APIClient().post(
+                "/api/billing/webhook/",
+                data=json.dumps({}),
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="t=1,v1=stub",
+            )
+        entry = AuditLog.objects.filter(
+            organization=org, action=AuditLog.Action.SUBSCRIPTION_CHANGED
+        ).first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.changes["status"], {"from": "trialing", "to": "active"})
 
 
 class V13PostgresOnlyRawSql(TestCase):

@@ -11,6 +11,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from audit.models import AuditLog
+from billing.permissions import HasActiveSubscription
+from billing.services import seat_check
 from audit.services import diff, record
 from organizations.scoping import organization_of
 
@@ -155,13 +157,18 @@ class EmployeeDetailAPIView(generics.RetrieveDestroyAPIView):
 
 
 class EmployeeReactivateAPIView(APIView):
-    permission_classes = (IsAuthenticated, IsManagement)
+    permission_classes = (IsAuthenticated, IsManagement, HasActiveSubscription)
 
     def post(self, request, pk):
         organization = organization_of(request.user)
         employee = generics.get_object_or_404(CustomUser, pk=pk, organization=organization)
         if not can_manage_target(request.user, employee):
             raise PermissionDenied("You do not have permission to manage this employee.")
+
+        # Reactivating occupies a seat, exactly like hiring.
+        allowed, message = seat_check(organization, adding=1)
+        if not allowed:
+            return Response({"detail": message}, status=status.HTTP_402_PAYMENT_REQUIRED)
 
         with transaction.atomic():
             employee.is_active = True

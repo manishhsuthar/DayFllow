@@ -96,6 +96,12 @@ class CompanySignupSerializer(serializers.Serializer):
         )
         organization.owner = owner
         organization.save(update_fields=["owner", "updated_at"])
+
+        # A trial is a real Subscription row, so `is_entitled` is the single
+        # question asked everywhere -- no "have they paid yet?" special case.
+        from billing.services import start_trial
+
+        start_trial(organization)
         return owner
 
 
