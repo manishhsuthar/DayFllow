@@ -10,6 +10,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from audit.models import AuditLog
+from audit.services import diff, record
 from organizations.scoping import organization_of
 
 from .models import CustomUser
@@ -142,10 +144,14 @@ class EmployeeDetailAPIView(generics.RetrieveDestroyAPIView):
         with transaction.atomic():
             instance.is_active = False
             instance.save(update_fields=["is_active", "updated_at"])
-
-        logger.info(
-            "Employee deactivated: %s by %s", instance.login_id, self.request.user.login_id
-        )
+            record(
+                organization=organization,
+                actor=self.request.user,
+                action=AuditLog.Action.EMPLOYEE_DEACTIVATED,
+                target=instance,
+                label=instance.login_id,
+                changes={"is_active": {"from": True, "to": False}},
+            )
 
 
 class EmployeeReactivateAPIView(APIView):
@@ -157,8 +163,17 @@ class EmployeeReactivateAPIView(APIView):
         if not can_manage_target(request.user, employee):
             raise PermissionDenied("You do not have permission to manage this employee.")
 
-        employee.is_active = True
-        employee.save(update_fields=["is_active", "updated_at"])
+        with transaction.atomic():
+            employee.is_active = True
+            employee.save(update_fields=["is_active", "updated_at"])
+            record(
+                organization=organization,
+                actor=request.user,
+                action=AuditLog.Action.EMPLOYEE_REACTIVATED,
+                target=employee,
+                label=employee.login_id,
+                changes={"is_active": {"from": False, "to": True}},
+            )
         return Response(EmployeeListSerializer(employee).data, status=status.HTTP_200_OK)
 
 
@@ -229,12 +244,23 @@ class OrganizationSettingsAPIView(generics.GenericAPIView):
 
     def put(self, request):
         organization = self.get_object()
+        tracked = ("name", "timezone", "logo_url", "departments", "roles",
+                   "employment_types", "bypass_attendance")
+        before = {field: getattr(organization, field) for field in tracked}
+
         serializer = self.get_serializer(organization, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        logger.info(
-            "Organization settings updated: slug=%s by=%s",
-            organization.slug,
-            request.user.login_id,
-        )
+        with transaction.atomic():
+            organization = serializer.save()
+            after = {field: getattr(organization, field) for field in tracked}
+            changed = diff(before, after)
+            if changed:
+                record(
+                    organization=organization,
+                    actor=request.user,
+                    action=AuditLog.Action.SETTINGS_CHANGED,
+                    target=organization,
+                    label=organization.slug,
+                    changes=changed,
+                )
         return Response(serializer.data, status=status.HTTP_200_OK)

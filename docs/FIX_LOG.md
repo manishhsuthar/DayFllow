@@ -12,8 +12,8 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-04 | Medium | Check-out 500s when there is no check-in | 🟢 Fixed | attendance/leave | `V04CheckoutCrash` |
 | V-05 | Medium | Leave accepts reversed / unbounded date ranges | 🟢 Fixed | attendance/leave | `V05LeaveDateValidation` |
 | V-06 | High | Leave approval destroys attendance history | 🟢 Fixed | attendance/leave | `V06LeaveApprovalDestroysAttendance` |
-| V-07 | High | Employees post unlimited expenses against own salary | 🔴 Open | — | `V07EmployeeSelfExpense` |
-| V-08 | Medium | Payroll can compute a negative net salary | 🔴 Open | — | `V08NegativeNetSalary` |
+| V-07 | High | Employees post unlimited expenses against own salary | 🟢 Fixed | payroll/audit | `V07EmployeeSelfExpense` |
+| V-08 | Medium | Payroll can compute a negative net salary | 🟢 Fixed | payroll/audit | `V08NegativeNetSalary` |
 | V-09 | High | Stored XSS in the HTML salary slip | 🟢 Fixed | tenancy | `V09SlipXSS` |
 | V-10 | Critical | Payment grants no entitlement; verify is unauthenticated | 🔴 Open | — | `V10PaymentGrantsNothing` |
 | V-11 | Medium | Login IDs predictable, globally sequential, racy | 🟢 Fixed | tenancy | `V11LoginIdCollision` |
@@ -25,8 +25,8 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-17 | High | HR can delete the company owner | 🟢 Fixed | tenancy | `V17HRPrivilegeCreep` |
 | V-18 | Medium | Employee directory exposes salaries | 🟢 Fixed | tenancy | `V18SalaryExposedInDirectory` |
 | V-19 | High | No rate limiting, including on login | 🟢 Fixed | security baseline | `V19NoLoginRateLimit` |
-| V-20 | High | Payroll re-run erases the payment audit trail | 🔴 Open | — | `V20PayrollRerunErasesPaymentAudit` |
-| V-21 | Low | `force_recompute` accepted and ignored | 🔴 Open | — | `V21ForceRecomputeIgnored` |
+| V-20 | High | Payroll re-run erases the payment audit trail | 🟢 Fixed | payroll/audit | `V20PayrollRerunErasesPaymentAudit` |
+| V-21 | Low | `force_recompute` accepted and ignored | 🟢 Fixed | payroll/audit | `V21ForceRecomputeIgnored` |
 | V-22 | Medium | Insecure production defaults | 🟢 Fixed | security baseline | — |
 | V-23 | Medium | JWTs in localStorage; no rotation or revocation | 🔴 Open | — | — |
 | V-24 | Medium | Authorization enforced in UI, not API | 🔴 Open | — | — |
@@ -35,7 +35,7 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-27 | High | No password reset; no email backend | 🟢 Fixed | tenancy | — |
 | V-28 | Low | `AllAttendance`/`AllLeaves` exclude ADMIN, unfiltered | 🟢 Fixed | attendance/leave | `V28UnboundedHistoryQueries` |
 | V-29 | Low | No pagination on any list endpoint | 🟢 Fixed | security baseline | — |
-| V-30 | Medium | No audit log for privileged or financial actions | 🔴 Open | — | — |
+| V-30 | Medium | No audit log for privileged or financial actions | 🟢 Fixed | payroll/audit | `V30AuditTrail` |
 | V-31 | Low | Electron opens DevTools in production builds | 🔴 Open | — | — |
 | V-32 | Low | Vite dev proxy disables TLS verification | 🔴 Open | — | — |
 | V-33 | Low | No Content-Security-Policy | 🔴 Open | — | — |
@@ -45,9 +45,35 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 
 | | Critical | High | Medium | Low | Total |
 |---|---|---|---|---|---|
-| Open | 1 | 2 | 4 | 4 | **11** |
+| Open | 1 | 0 | 3 | 2 | **6** |
 | Partial | 0 | 0 | 0 | 1 | **1** |
-| Fixed | 4 | 7 | 8 | 3 | **22** |
+| Fixed | 4 | 9 | 9 | 5 | **27** |
+
+### payroll/audit — money and accountability
+
+Fixed V-07, V-08, V-20, V-21, V-30.
+
+- **Expenses are claims now.** `POST /salaries/add-expense/` only checked for a payroll manager
+  when an `employee_id` was supplied, so any employee could omit it and move an unlimited,
+  unreviewable, irreversible amount against their own pay. `ExpenseClaim` has
+  PENDING/APPROVED/REJECTED, only approval touches `outstanding`, nobody reviews their own claim,
+  and a claim cannot be reviewed twice.
+- **Net pay is floored at zero**, in code and by a database `CheckConstraint`. Recovery of
+  outstanding expenses is capped at half of gross and the remainder is recorded in
+  `expense_carried_forward` rather than driving the payslip negative (the audit reproduced
+  −49000.00). Migration `payroll.0005` clamps any existing negative rows into carry-forward
+  before the constraint lands.
+- **A credited payslip is immutable.** Re-running payroll used to reset PAID records to PENDING
+  and discard `credited_at`/`credited_by`, so an operator saw an unpaid payslip and paid it
+  twice. Re-runs now report skipped records with a reason, and not even `force_recompute` will
+  touch a PAID one.
+- `force_recompute` is honoured: without it a pending payslip is left alone, with it the record
+  is recomputed and its `revision` incremented.
+- **An append-only `AuditLog`** records salary changes (with before/after), payroll runs,
+  credits, expense decisions, leave decisions, employee create/deactivate/reactivate and settings
+  changes. Entries are written in the same transaction as the action, refuse to be updated or
+  deleted, and are readable at `GET /api/audit/` by the organization owner only.
+- Salaries are USD-only; setting a salary and crediting payroll are owner-only actions.
 
 ### attendance/leave — domain correctness
 

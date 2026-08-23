@@ -63,6 +63,7 @@ class PayrollFlowTests(APITestCase):
         self.assertEqual(payroll.half_days, 1)
         self.assertEqual(payroll.payable_days, Decimal("2.50"))
         self.assertEqual(payroll.net_salary, Decimal("2678.57"))
+        self.assertEqual(payroll.expense_amount, Decimal("0.00"))
 
         credit_response = self.client.post(
             reverse("payroll-credit", kwargs={"payroll_id": payroll.id}),
@@ -108,7 +109,7 @@ class PayrollFlowTests(APITestCase):
             any(item["id"] == f"salary-{payroll.id}" for item in response.data["items"])
         )
 
-    def test_add_expense_and_payroll_adjustment(self):
+    def test_expense_claim_requires_approval_before_it_affects_pay(self):
         salary = EmployeeSalary.objects.create(
             employee=self.employee,
             monthly_salary=Decimal("30000.00"),
@@ -117,39 +118,66 @@ class PayrollFlowTests(APITestCase):
             updated_by=self.admin,
         )
 
+        # The employee submits. Nothing moves yet: submitting used to write
+        # straight into `outstanding` with no review at all (audit V-07).
         self.client.force_authenticate(user=self.employee)
         response = self.client.post(
-            reverse("payroll-add-expense"),
-            {"amount": "5000.00"},
+            reverse("payroll-expenses"),
+            {
+                "amount": "5000.00",
+                "description": "Travel to client site",
+                "incurred_on": str(date.today()),
+            },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        claim_id = response.data["id"]
+
+        salary.refresh_from_db()
+        self.assertEqual(salary.expense, Decimal("0.00"))
+        self.assertEqual(salary.outstanding, Decimal("0.00"))
+
+        # The admin approves, and only now does the balance change.
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            reverse("payroll-expense-review", kwargs={"claim_id": claim_id}),
+            {"action": "APPROVE"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
         salary.refresh_from_db()
         self.assertEqual(salary.expense, Decimal("5000.00"))
         self.assertEqual(salary.outstanding, Decimal("5000.00"))
 
-        self.client.force_authenticate(user=self.admin)
-        response = self.client.post(
-            reverse("payroll-add-expense"),
-            {"amount": "1200.50", "employee_id": self.employee.id},
-            format="json",
+    def test_outstanding_expenses_never_push_a_payslip_negative(self):
+        salary = EmployeeSalary.objects.create(
+            employee=self.employee,
+            monthly_salary=Decimal("30000.00"),
+            currency="USD",
+            outstanding=Decimal("6200.50"),
+            set_by=self.admin,
+            updated_by=self.admin,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        salary.refresh_from_db()
-        self.assertEqual(salary.expense, Decimal("6200.50"))
-        self.assertEqual(salary.outstanding, Decimal("6200.50"))
 
+        # One present day out of 28 earns ~1071.43, far less than is outstanding.
         Attendance.objects.create(user=self.employee, date=date(2026, 2, 1), status="PRESENT")
+
+        self.client.force_authenticate(user=self.admin)
         run_response = self.client.post(
             reverse("payroll-run"),
             {"month": "2026-02", "employee_id": self.employee.id},
             format="json",
         )
-        self.assertEqual(run_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(run_response.status_code, status.HTTP_200_OK, run_response.data)
 
         payroll = PayrollRecord.objects.get(employee=self.employee, month=date(2026, 2, 1))
-        self.assertEqual(payroll.expense_amount, Decimal("6200.50"))
-        self.assertEqual(payroll.net_salary, Decimal("-5129.07"))
+        self.assertEqual(payroll.gross_salary, Decimal("1071.43"))
+        # Recovery is capped at half of gross; the rest waits for a later period.
+        self.assertEqual(payroll.expense_amount, Decimal("535.72"))
+        self.assertEqual(payroll.net_salary, Decimal("535.71"))
+        self.assertEqual(payroll.expense_carried_forward, Decimal("5664.78"))
+        self.assertGreaterEqual(payroll.net_salary, Decimal("0.00"))
 
         credit_response = self.client.post(
             reverse("payroll-credit", kwargs={"payroll_id": payroll.id}),
@@ -158,5 +186,4 @@ class PayrollFlowTests(APITestCase):
         )
         self.assertEqual(credit_response.status_code, status.HTTP_200_OK)
         salary.refresh_from_db()
-        self.assertEqual(salary.outstanding, Decimal("0.00"))
-
+        self.assertEqual(salary.outstanding, Decimal("5664.78"))

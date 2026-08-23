@@ -15,6 +15,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import CustomUser
 from accounts.permissions import IsManagement
+from audit.models import AuditLog
+from audit.services import record
 
 from .serializers import ChangePasswordSerializer, CreateEmployeeSerializer, LoginSerializer
 
@@ -227,6 +229,14 @@ class CreateEmployeeAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         user, temp_password = serializer.save()
 
+        record(
+            organization=user.organization,
+            actor=request.user,
+            action=AuditLog.Action.EMPLOYEE_CREATED,
+            target=user,
+            label=user.login_id,
+            changes={"role": user.role, "department": user.department},
+        )
         logger.info(
             "employee created login_id=%s by=%s org=%s",
             user.login_id,

@@ -145,6 +145,7 @@ INSTALLED_APPS = [
     "leave",
     "dashboard",
     "payroll",
+    "audit",
     "realtime",
 ]
 

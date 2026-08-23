@@ -20,6 +20,8 @@ from rest_framework.views import APIView
 from accounts.permissions import IsManagement, can_manage_target
 from attendance.models import Attendance
 from attendance.views import apply_date_filters
+from audit.models import AuditLog
+from audit.services import record
 from core.pagination import DefaultPagination
 from organizations.scoping import organization_of
 
@@ -160,6 +162,14 @@ class ApproveRejectLeaveAPIView(APIView):
             if action == "REJECT":
                 leave.status = "REJECTED"
                 leave.save(update_fields=["status"])
+                record(
+                    organization=leave.user.organization,
+                    actor=request.user,
+                    action=AuditLog.Action.LEAVE_REJECTED,
+                    target=leave,
+                    label=f"{leave.user.login_id} {leave.start_date}..{leave.end_date}",
+                    changes={"leave_type": leave.leave_type},
+                )
                 logger.info(
                     "leave rejected id=%s employee=%s by=%s",
                     leave.id,
@@ -202,6 +212,15 @@ class ApproveRejectLeaveAPIView(APIView):
                 )
                 marked += 1
                 current += timedelta(days=1)
+
+            record(
+                organization=leave.user.organization,
+                actor=request.user,
+                action=AuditLog.Action.LEAVE_APPROVED,
+                target=leave,
+                label=f"{leave.user.login_id} {leave.start_date}..{leave.end_date}",
+                changes={"leave_type": leave.leave_type, "days_marked": marked},
+            )
 
         logger.info(
             "leave approved id=%s employee=%s by=%s days=%s",

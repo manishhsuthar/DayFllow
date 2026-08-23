@@ -1,8 +1,9 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from datetime import date
 from django.utils import timezone
+
+from attendance.views import workday_for
 
 from attendance.models import Attendance
 from leave.models import LeaveRequest
@@ -14,7 +15,7 @@ class EmployeeDashboardAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        today = date.today()
+        today = workday_for(request.user)
         payroll_month = today.replace(day=1)
 
         today_attendance = Attendance.objects.filter(
@@ -57,7 +58,7 @@ class AdminDashboardAPIView(APIView):
                 status=403
             )
 
-        today = date.today()
+        today = workday_for(request.user)
 
         data = {
             "total_employees": CustomUser.objects.filter(
@@ -211,7 +212,7 @@ class DashboardNotificationsAPIView(APIView):
                     }
                 )
 
-            today_attendance = Attendance.objects.filter(user=user, date=date.today()).first()
+            today_attendance = Attendance.objects.filter(user=user, date=workday_for(user)).first()
             if not today_attendance:
                 items.insert(
                     0,

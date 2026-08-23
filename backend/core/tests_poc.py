@@ -278,21 +278,93 @@ class V06LeaveApprovalDestroysAttendance(TestCase):
 
 
 class V07EmployeeSelfExpense(TestCase):
-    """V-07: any employee can still post expenses against their own salary."""
+    """V-07 FIXED: submitting an expense is a claim; only approval moves money."""
 
-    def test_employee_inflates_own_outstanding(self):
-        org = mk_org("Acme Corp")
-        emp = mk_user("SELFEXP", org)
-        EmployeeSalary.objects.create(
-            employee=emp, monthly_salary=Decimal("5000.00"), currency="USD"
+    def setUp(self):
+        self.org = mk_org("Acme Corp")
+        self.admin = mk_user("EXPADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("SELFEXP", self.org)
+        self.salary = EmployeeSalary.objects.create(
+            employee=self.emp, monthly_salary=Decimal("5000.00"), currency="USD"
         )
-        resp = auth(emp).post(
-            "/api/payroll/salaries/add-expense/", {"amount": "999999.00"}, format="json"
+
+    def _submit(self, client, **overrides):
+        payload = {
+            "amount": "250.00",
+            "description": "Client dinner",
+            "incurred_on": str(date.today()),
+            **overrides,
+        }
+        return client.post("/api/payroll/expenses/", payload, format="json")
+
+    def test_submitting_does_not_touch_outstanding(self):
+        resp = self._submit(auth(self.emp), amount="999999.00")
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["status"], "PENDING")
+
+        self.salary.refresh_from_db()
+        self.assertEqual(self.salary.outstanding, Decimal("0.00"))
+        self.assertEqual(self.salary.expense, Decimal("0.00"))
+
+    def test_approval_is_what_moves_money(self):
+        claim_id = self._submit(auth(self.emp)).data["id"]
+        resp = auth(self.admin).post(
+            f"/api/payroll/expenses/{claim_id}/review/", {"action": "APPROVE"}, format="json"
         )
         self.assertEqual(resp.status_code, 200, resp.data)
-        self.assertEqual(
-            EmployeeSalary.objects.get(employee=emp).outstanding, Decimal("999999.00")
+
+        self.salary.refresh_from_db()
+        self.assertEqual(self.salary.outstanding, Decimal("250.00"))
+        self.assertEqual(self.salary.expense, Decimal("250.00"))
+
+    def test_rejection_moves_nothing(self):
+        claim_id = self._submit(auth(self.emp)).data["id"]
+        auth(self.admin).post(
+            f"/api/payroll/expenses/{claim_id}/review/", {"action": "REJECT"}, format="json"
         )
+        self.salary.refresh_from_db()
+        self.assertEqual(self.salary.outstanding, Decimal("0.00"))
+
+    def test_employees_cannot_review_their_own_claim(self):
+        claim_id = self._submit(auth(self.emp)).data["id"]
+        resp = auth(self.emp).post(
+            f"/api/payroll/expenses/{claim_id}/review/", {"action": "APPROVE"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_manager_cannot_approve_their_own_claim(self):
+        hr = mk_user("SELFHR", self.org, role="HR")
+        claim_id = self._submit(auth(hr)).data["id"]
+        resp = auth(hr).post(
+            f"/api/payroll/expenses/{claim_id}/review/", {"action": "APPROVE"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_claim_cannot_be_reviewed_twice(self):
+        claim_id = self._submit(auth(self.emp)).data["id"]
+        client = auth(self.admin)
+        client.post(f"/api/payroll/expenses/{claim_id}/review/", {"action": "APPROVE"}, format="json")
+        resp = client.post(
+            f"/api/payroll/expenses/{claim_id}/review/", {"action": "APPROVE"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.salary.refresh_from_db()
+        self.assertEqual(self.salary.outstanding, Decimal("250.00"))
+
+    def test_employees_cannot_file_for_a_colleague(self):
+        other = mk_user("OTHEREMP", self.org)
+        resp = self._submit(auth(self.emp), employee_id=other.id)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_future_and_ancient_expenses_are_rejected(self):
+        for offset in (1, -400):
+            with self.subTest(offset=offset):
+                resp = self._submit(
+                    auth(self.emp), incurred_on=str(date.today() + timedelta(days=offset))
+                )
+                self.assertEqual(resp.status_code, 400)
 
 
 class V09SlipXSS(TestCase):
@@ -468,28 +540,197 @@ class V19NoLoginRateLimit(TestCase):
 
 
 class V20PayrollRerunErasesPaymentAudit(TestCase):
-    """V-20: re-running payroll still flips PAID back to PENDING."""
+    """V-20 FIXED: a credited payslip is immutable; re-runs skip it."""
 
-    def test_rerun_resets_paid_record(self):
-        org = mk_org("Acme Corp", bypass_attendance=True)
-        admin = mk_user("RERUNADMIN", org, role="ADMIN")
-        emp = mk_user("RERUNEMP", org)
+    def setUp(self):
+        self.org = mk_org("Acme Corp", bypass_attendance=True)
+        self.admin = mk_user("RERUNADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("RERUNEMP", self.org)
         EmployeeSalary.objects.create(
-            employee=emp, monthly_salary=Decimal("3000.00"), currency="USD"
+            employee=self.emp, monthly_salary=Decimal("3000.00"), currency="USD"
         )
-        month = date.today().replace(day=1).strftime("%Y-%m")
-        client = auth(admin)
-        client.post("/api/payroll/run/", {"month": month}, format="json")
-        record = PayrollRecord.objects.get(employee=emp)
-        client.post(f"/api/payroll/records/{record.id}/credit/", {}, format="json")
+        self.month = date.today().replace(day=1).strftime("%Y-%m")
+        self.client_ = auth(self.admin)
+
+    def _run(self, **extra):
+        return self.client_.post("/api/payroll/run/", {"month": self.month, **extra}, format="json")
+
+    def test_a_credited_payslip_survives_a_rerun(self):
+        self._run()
+        record = PayrollRecord.objects.get(employee=self.emp)
+        self.client_.post(f"/api/payroll/records/{record.id}/credit/", {}, format="json")
+        record.refresh_from_db()
+        credited_at, credited_by = record.credited_at, record.credited_by_id
+        self.assertEqual(record.status, "PAID")
+
+        resp = self._run()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([s["reason"] for s in resp.data["skipped"]], ["already_paid"])
 
         record.refresh_from_db()
         self.assertEqual(record.status, "PAID")
+        self.assertEqual(record.credited_at, credited_at)
+        self.assertEqual(record.credited_by_id, credited_by)
 
-        client.post("/api/payroll/run/", {"month": month}, format="json")
+    def test_even_force_recompute_will_not_touch_a_paid_payslip(self):
+        self._run()
+        record = PayrollRecord.objects.get(employee=self.emp)
+        self.client_.post(f"/api/payroll/records/{record.id}/credit/", {}, format="json")
+
+        resp = self._run(force_recompute=True)
+        self.assertEqual([s["reason"] for s in resp.data["skipped"]], ["already_paid"])
         record.refresh_from_db()
-        self.assertEqual(record.status, "PENDING")
-        self.assertIsNone(record.credited_at)
+        self.assertEqual(record.status, "PAID")
+
+    def test_a_pending_payslip_is_left_alone_without_the_flag(self):
+        self._run()
+        resp = self._run()
+        self.assertEqual([s["reason"] for s in resp.data["skipped"]], ["already_generated"])
+
+    def test_credit_is_owner_only(self):
+        hr = mk_user("CREDITHR", self.org, role="HR")
+        self._run()
+        record = PayrollRecord.objects.get(employee=self.emp)
+        resp = auth(hr).post(f"/api/payroll/records/{record.id}/credit/", {}, format="json")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_payroll_cannot_be_run_for_a_future_month(self):
+        future = (date.today().replace(day=1) + timedelta(days=62)).strftime("%Y-%m")
+        resp = self.client_.post("/api/payroll/run/", {"month": future}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("month", resp.data)
+
+
+class V21ForceRecomputeIgnored(TestCase):
+    """V-21 FIXED: force_recompute actually recomputes."""
+
+    def setUp(self):
+        self.org = mk_org("Acme Corp", bypass_attendance=True)
+        self.admin = mk_user("FORCEADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("FORCEEMP", self.org)
+        self.salary = EmployeeSalary.objects.create(
+            employee=self.emp, monthly_salary=Decimal("3000.00"), currency="USD"
+        )
+        self.month = date.today().replace(day=1).strftime("%Y-%m")
+
+    def test_the_flag_changes_the_outcome(self):
+        client = auth(self.admin)
+        client.post("/api/payroll/run/", {"month": self.month}, format="json")
+        record = PayrollRecord.objects.get(employee=self.emp)
+        self.assertEqual(record.net_salary, Decimal("3000.00"))
+        self.assertEqual(record.revision, 1)
+
+        # Change the salary, then recompute.
+        self.salary.monthly_salary = Decimal("4000.00")
+        self.salary.save(update_fields=["monthly_salary"])
+
+        without = client.post("/api/payroll/run/", {"month": self.month}, format="json")
+        self.assertEqual(without.data["results"], [])
+        record.refresh_from_db()
+        self.assertEqual(record.net_salary, Decimal("3000.00"))
+
+        with_flag = client.post(
+            "/api/payroll/run/", {"month": self.month, "force_recompute": True}, format="json"
+        )
+        self.assertEqual(with_flag.data["results"][0]["status"], "recomputed")
+        record.refresh_from_db()
+        self.assertEqual(record.net_salary, Decimal("4000.00"))
+        self.assertEqual(record.revision, 2)
+
+
+class V30AuditTrail(TestCase):
+    """V-30 FIXED: privileged and financial actions leave an append-only record."""
+
+    def setUp(self):
+        self.org = mk_org("Acme Corp", bypass_attendance=True)
+        self.admin = mk_user("AUDITADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("AUDITEMP", self.org)
+        self.client_ = auth(self.admin)
+
+    def _actions(self):
+        from audit.models import AuditLog
+
+        return list(
+            AuditLog.objects.filter(organization=self.org).values_list("action", flat=True)
+        )
+
+    def test_salary_changes_are_recorded_with_before_and_after(self):
+        from audit.models import AuditLog
+
+        self.client_.post(
+            "/api/payroll/salaries/",
+            {"employee_id": self.emp.id, "monthly_salary": "1000.00"},
+            format="json",
+        )
+        self.client_.post(
+            "/api/payroll/salaries/",
+            {"employee_id": self.emp.id, "monthly_salary": "2000.00"},
+            format="json",
+        )
+        entry = AuditLog.objects.filter(action=AuditLog.Action.SALARY_SET).first()
+        self.assertEqual(entry.actor_label, "AUDITADMIN")
+        self.assertEqual(entry.target_label, "AUDITEMP")
+        self.assertEqual(entry.changes["monthly_salary"], {"from": "1000.00", "to": "2000.00"})
+
+    def test_the_money_path_is_covered_end_to_end(self):
+        from audit.models import AuditLog
+
+        self.client_.post(
+            "/api/payroll/salaries/",
+            {"employee_id": self.emp.id, "monthly_salary": "1000.00"},
+            format="json",
+        )
+        month = date.today().replace(day=1).strftime("%Y-%m")
+        self.client_.post("/api/payroll/run/", {"month": month}, format="json")
+        record = PayrollRecord.objects.get(employee=self.emp)
+        self.client_.post(f"/api/payroll/records/{record.id}/credit/", {}, format="json")
+        self.client_.delete(f"/api/accounts/employees/{self.emp.id}/")
+
+        actions = self._actions()
+        for expected in (
+            AuditLog.Action.SALARY_SET,
+            AuditLog.Action.PAYROLL_RUN,
+            AuditLog.Action.PAYROLL_CREDITED,
+            AuditLog.Action.EMPLOYEE_DEACTIVATED,
+        ):
+            self.assertIn(expected, actions)
+
+    def test_entries_cannot_be_modified_or_deleted(self):
+        from audit.models import AuditLog
+
+        self.client_.post(
+            "/api/payroll/salaries/",
+            {"employee_id": self.emp.id, "monthly_salary": "1000.00"},
+            format="json",
+        )
+        entry = AuditLog.objects.first()
+        with self.assertRaises(RuntimeError):
+            entry.save()
+        with self.assertRaises(RuntimeError):
+            entry.delete()
+
+    def test_the_log_is_readable_by_the_owner_only(self):
+        hr = mk_user("AUDITHR", self.org, role="HR")
+        self.assertEqual(self.client_.get("/api/audit/").status_code, 200)
+        self.assertEqual(auth(hr).get("/api/audit/").status_code, 403)
+        self.assertEqual(auth(self.emp).get("/api/audit/").status_code, 403)
+
+    def test_the_log_is_tenant_scoped(self):
+        other_org = mk_org("Beta Co")
+        other_admin = mk_user("BETAADMIN", other_org, role="ADMIN")
+        self.client_.post(
+            "/api/payroll/salaries/",
+            {"employee_id": self.emp.id, "monthly_salary": "1000.00"},
+            format="json",
+        )
+        self.assertEqual(auth(other_admin).get("/api/audit/").data["count"], 0)
+        self.assertGreater(self.client_.get("/api/audit/").data["count"], 0)
 
 
 class V27NoPasswordReset(TestCase):
@@ -841,22 +1082,70 @@ class V28UnboundedHistoryQueries(TestCase):
 
 
 class V08NegativeNetSalary(TestCase):
-    """V-08: payroll can still compute a negative net salary."""
+    """V-08 FIXED: net pay is floored at zero and the shortfall carries forward."""
 
-    def test_payroll_goes_negative(self):
-        org = mk_org("Acme Corp", bypass_attendance=True)
-        admin = mk_user("NEGADMIN", org, role="ADMIN")
-        emp = mk_user("NEGEMP", org)
+    def setUp(self):
+        self.org = mk_org("Acme Corp", bypass_attendance=True)
+        self.admin = mk_user("NEGADMIN", self.org, role="ADMIN")
+        self.org.owner = self.admin
+        self.org.save()
+        self.emp = mk_user("NEGEMP", self.org)
+
+    def _run(self, monthly, outstanding):
         EmployeeSalary.objects.create(
-            employee=emp,
-            monthly_salary=Decimal("1000.00"),
+            employee=self.emp,
+            monthly_salary=Decimal(monthly),
             currency="USD",
-            outstanding=Decimal("50000.00"),
+            outstanding=Decimal(outstanding),
         )
         month = date.today().replace(day=1).strftime("%Y-%m")
-        resp = auth(admin).post("/api/payroll/run/", {"month": month}, format="json")
+        resp = auth(self.admin).post("/api/payroll/run/", {"month": month}, format="json")
         self.assertEqual(resp.status_code, 200, resp.data)
-        self.assertLess(PayrollRecord.objects.get(employee=emp).net_salary, Decimal("0.00"))
+        return PayrollRecord.objects.get(employee=self.emp)
+
+    def test_a_huge_outstanding_balance_cannot_push_pay_negative(self):
+        record = self._run("1000.00", "50000.00")
+        self.assertGreaterEqual(record.net_salary, Decimal("0.00"))
+
+    def test_the_unrecovered_remainder_is_carried_forward(self):
+        record = self._run("1000.00", "50000.00")
+        # Recovery is capped at half of gross, so 500 comes off and the rest waits.
+        self.assertEqual(record.gross_salary, Decimal("1000.00"))
+        self.assertEqual(record.expense_amount, Decimal("500.00"))
+        self.assertEqual(record.net_salary, Decimal("500.00"))
+        self.assertEqual(record.expense_carried_forward, Decimal("49500.00"))
+
+    def test_a_small_balance_is_recovered_in_full(self):
+        record = self._run("1000.00", "100.00")
+        self.assertEqual(record.expense_amount, Decimal("100.00"))
+        self.assertEqual(record.net_salary, Decimal("900.00"))
+        self.assertEqual(record.expense_carried_forward, Decimal("0.00"))
+
+    def test_the_database_refuses_a_negative_payslip(self):
+        from django.db.utils import IntegrityError
+
+        salary = EmployeeSalary.objects.create(
+            employee=self.emp, monthly_salary=Decimal("100.00"), currency="USD"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollRecord.objects.create(
+                employee=self.emp,
+                salary=salary,
+                month=date(2026, 1, 1),
+                total_days_in_month=31,
+                designated_salary=Decimal("100.00"),
+                net_salary=Decimal("-1.00"),
+            )
+
+    def test_salary_must_be_usd(self):
+        other = mk_user("CURREMP", self.org)
+        resp = auth(self.admin).post(
+            "/api/payroll/salaries/",
+            {"employee_id": other.id, "monthly_salary": "100.00", "currency": "INR"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("currency", resp.data)
 
 
 class V11LoginIdCollision(TestCase):
@@ -966,25 +1255,6 @@ class V25CompanyConfigOrphansRoles(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.data)
-
-
-# ===========================================================================
-# Low
-# ===========================================================================
-
-
-class V21ForceRecomputeIgnored(TestCase):
-    """V-21: the documented force_recompute flag is still parsed and ignored."""
-
-    def test_flag_has_no_effect(self):
-        import inspect
-
-        from payroll import views as payroll_views
-
-        src = inspect.getsource(payroll_views.PayrollRunAPIView)
-        lines = [line for line in src.splitlines() if "force_recompute" in line]
-        self.assertEqual(len(lines), 1, lines)
-        self.assertIn("force_recompute = serializer.validated_data.get", lines[0])
 
 
 # ===========================================================================
