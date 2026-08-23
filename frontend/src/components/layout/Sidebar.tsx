@@ -1,12 +1,22 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Users, Clock, Calendar, LogOut, LayoutDashboard, WalletCards } from 'lucide-react';
+import {
+  Users,
+  Clock,
+  Calendar,
+  LogOut,
+  LayoutDashboard,
+  WalletCards,
+  Receipt,
+  CreditCard,
+  ShieldCheck,
+} from 'lucide-react';
 import { AvatarWithBadge } from '../Avatar';
 import { useAuth } from '@/contexts/AuthContext';
 import dayflowLogo from '../../assets/dayflow-logo.png';
 
 export const Sidebar: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, isOwner } = useAuth();
   const navigate = useNavigate();
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
   const displayName =
@@ -22,8 +32,11 @@ export const Sidebar: React.FC = () => {
           ? 'Intern'
           : 'Employee';
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    // Awaited so the refresh token is blacklisted server-side before we navigate.
+    // Logout used to only clear localStorage, leaving the session valid for up to
+    // a week (audit V-23).
+    await logout();
     navigate('/login');
   };
 
@@ -52,7 +65,15 @@ export const Sidebar: React.FC = () => {
     ...(isAdmin ? [{ to: getEmployeesLink(), icon: Users, label: 'Employees' }] : []),
     { to: getAttendanceLink(), icon: Clock, label: 'Attendance' },
     { to: getLeavesLink(), icon: Calendar, label: 'Leaves' },
-    { to: '/payroll', icon: WalletCards, label: 'Payroll' },
+    ...(isAdmin ? [{ to: '/payroll', icon: WalletCards, label: 'Payroll' }] : []),
+    { to: '/expenses', icon: Receipt, label: 'Expenses' },
+    // Billing and the audit trail are owner-only, server-side as well as here.
+    ...(isOwner
+      ? [
+          { to: '/billing', icon: CreditCard, label: 'Billing' },
+          { to: '/audit', icon: ShieldCheck, label: 'Audit trail' },
+        ]
+      : []),
   ];
 
   return (

@@ -329,12 +329,22 @@ const Payroll: React.FC = () => {
       });
 
       const generated = result.results.filter((item) => item.status === "generated").length;
-      const updated = result.results.filter((item) => item.status === "updated").length;
-      const skipped = result.results.filter((item) => item.status === "skipped").length;
+      const recomputed = result.results.filter((item) => item.status === "recomputed").length;
+      // Already-credited payslips are reported, never silently rewritten: doing
+      // that used to reset them to PENDING and get them paid twice (audit V-20).
+      const alreadyPaid = result.skipped.filter((item) => item.reason === "already_paid").length;
+      const alreadyGenerated = result.skipped.filter(
+        (item) => item.reason === "already_generated",
+      ).length;
+
+      const parts = [`${generated} generated`];
+      if (recomputed) parts.push(`${recomputed} recomputed`);
+      if (alreadyGenerated) parts.push(`${alreadyGenerated} left unchanged`);
+      if (alreadyPaid) parts.push(`${alreadyPaid} already paid and untouched`);
 
       toast({
         title: "Payroll processed",
-        description: `Generated: ${generated}, Updated: ${updated}, Skipped: ${skipped}`,
+        description: parts.join(", ") + ".",
       });
       await loadPayrollRecords({ month: runMonth });
       setRecordMonth(runMonth);

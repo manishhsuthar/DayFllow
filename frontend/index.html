@@ -1,14 +1,45 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    
-    
+
+    <!--
+      Content-Security-Policy.
+
+      There was none before (audit V-33). Combined with the stored XSS in the
+      salary slip and JWTs kept in localStorage, nothing stopped an injected
+      script from posting a session token to an arbitrary host.
+
+      `connect-src` is intentionally broad because the API origin is configured
+      per deployment via VITE_API_BASE_URL. Tighten it to your exact API and
+      WebSocket origins in the reverse proxy, where a real CSP header belongs --
+      a meta tag cannot express `frame-ancestors` or report-only mode.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: https:;
+        font-src 'self' data:;
+        connect-src 'self' https: wss: ws:;
+        form-action 'self';
+        base-uri 'self';
+        object-src 'none';
+        frame-src https://checkout.stripe.com https://billing.stripe.com;
+      "
+    />
+    <meta name="referrer" content="same-origin" />
+
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    
-    <title>Dayflow - HR Management System</title>
+
+    <title>DayFlow — HR Management for growing teams</title>
+    <meta
+      name="description"
+      content="DayFlow is an HR platform for attendance, leave, payroll and expenses, built for small and growing teams."
+    />
   </head>
   <body>
     <div id="root"></div>

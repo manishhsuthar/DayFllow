@@ -51,18 +51,27 @@ const Signup: React.FC = () => {
         company_name: companyName,
         email,
         password,
+        // Attendance day boundaries are resolved in this zone rather than the
+        // server's clock (audit V-26). Detected here, changeable in settings.
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       });
       await login(email, password);
       toast({
-        title: 'Account created!',
-        description: 'Complete your company setup to continue.',
+        title: 'Company created',
+        description: 'Your free trial has started. Let us finish your setup.',
       });
       navigate('/company/setup');
     } catch (error: any) {
-      const message = error?.message || 'An error occurred. Please try again.';
+      // The company-name conflict is the most likely failure and deserves its
+      // own wording: signup creates a tenant and can never join one (audit V-01).
+      const companyError = error?.fieldErrors?.company_name?.join(' ');
       toast({
-        title: 'Error',
-        description: message,
+        title: companyError ? 'That company is already registered' : 'Could not create your account',
+        description:
+          companyError ||
+          error?.fieldErrors?.password?.join(' ') ||
+          error?.message ||
+          'Please check your details and try again.',
         variant: 'destructive',
       });
     } finally {
@@ -137,6 +146,7 @@ const Signup: React.FC = () => {
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
               placeholder="Acme Inc."
+              minLength={2}
               className="w-full px-4 py-3 rounded-xl border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
               required
               autoComplete="organization"

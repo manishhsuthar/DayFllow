@@ -99,7 +99,7 @@ const CompanySetup: React.FC = () => {
     try {
       await saveCompanyConfig({
         departments,
-        roles,
+        roles: roles as Array<"EMP" | "INT" | "HR">,
         employment_types: employmentTypes,
         logo_url: trimmedLogoUrl,
       });

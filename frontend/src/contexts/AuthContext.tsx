@@ -1,81 +1,124 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { login as apiLogin, signup as apiSignup } from '@/api/auth';
-
-interface User {
-  first_name: string;
-  last_name: string;
-  email: string;
-  company_name?: string;
-  role: 'ADMIN' | 'HR' | 'EMP' | 'INT';
-  login_id: string;
-  date_of_joining?: string;
-  department?: string;
-  employment_type?: string;
-  salary?: number | string | null;
-}
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  changePassword as apiChangePassword,
+  fetchCurrentUser,
+  login as apiLogin,
+  logout as apiLogout,
+  signup as apiSignup,
+  type CurrentUser,
+  type Role,
+} from "@/api/auth";
+import { clearTokens, getTokens, setSessionExpiredHandler } from "@/api/client";
 
 interface AuthContextType {
-  user: User | null;
+  user: CurrentUser | null;
+  /** True until the stored session has been checked against the server. */
+  isLoading: boolean;
   isAuthenticated: boolean;
-  login: (loginId: string, password: string, userDetails?: Partial<User>) => Promise<User>;
-  signup: (userData: object) => Promise<any>;
-  logout: () => void;
+  mustChangePassword: boolean;
+  hasRole: (...roles: Role[]) => boolean;
+  isOwner: boolean;
+  isManagement: boolean;
+  login: (loginId: string, password: string) => Promise<CurrentUser>;
+  signup: (payload: Parameters<typeof apiSignup>[0]) => Promise<unknown>;
+  changePassword: (oldPassword: string, newPassword: string) => Promise<CurrentUser>;
+  refreshUser: () => Promise<CurrentUser | null>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const storedUser = localStorage.getItem('dayflow_user');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
+  /**
+   * Identity comes from the server, every session, and is never persisted.
+   *
+   * The app used to hydrate `user` -- including `role` -- straight out of
+   * localStorage, a value the user controls, so setting `{"role":"ADMIN"}` there
+   * revealed the entire admin interface (audit V-24).
+   */
+  const refreshUser = useCallback(async () => {
+    if (!getTokens()) {
+      setUser(null);
+      return null;
+    }
+    try {
+      const current = await fetchCurrentUser();
+      setUser(current);
+      return current;
+    } catch {
+      clearTokens();
+      setUser(null);
+      return null;
     }
   }, []);
 
-  const login = async (loginId: string, password: string, userDetails?: Partial<User>) => {
-    const data = await apiLogin(loginId, password);
-    const userData: User = {
-      role: data.role,
-      login_id: data.login_id,
-      first_name: data.first_name ?? userDetails?.first_name ?? '',
-      last_name: data.last_name ?? userDetails?.last_name ?? '',
-      email: data.email ?? userDetails?.email ?? loginId,
-      company_name: data.company_name ?? userDetails?.company_name ?? '',
-      date_of_joining: data.date_of_joining ?? userDetails?.date_of_joining,
-      department: data.department ?? userDetails?.department ?? '',
-      employment_type: data.employment_type ?? userDetails?.employment_type ?? '',
-      salary: data.salary ?? userDetails?.salary ?? null,
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await refreshUser();
+      if (!cancelled) setIsLoading(false);
+    })();
+    return () => {
+      cancelled = true;
     };
-    setUser(userData);
-    localStorage.setItem('dayflow_user', JSON.stringify(userData));
-    localStorage.setItem('dayflow_auth_tokens', JSON.stringify({ access: data.access, refresh: data.refresh }));
-    return userData;
-  };
+  }, [refreshUser]);
 
-  const signup = async (userData: object) => {
-    return await apiSignup(userData);
-  };
+  // When a refresh token finally expires, drop the user so the guards redirect.
+  useEffect(() => {
+    setSessionExpiredHandler(() => setUser(null));
+    return () => setSessionExpiredHandler(null);
+  }, []);
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('dayflow_user');
-    localStorage.removeItem('dayflow_auth_tokens');
-  };
+  const login = useCallback(async (loginId: string, password: string) => {
+    const current = await apiLogin(loginId, password);
+    setUser(current);
+    return current;
+  }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, signup, logout }}>
-      {children}
-    </AuthContext.Provider>
+  const signup = useCallback(
+    (payload: Parameters<typeof apiSignup>[0]) => apiSignup(payload),
+    [],
   );
-};
 
+  const changePassword = useCallback(async (oldPassword: string, newPassword: string) => {
+    const current = await apiChangePassword(oldPassword, newPassword);
+    setUser(current);
+    return current;
+  }, []);
+
+  const logout = useCallback(async () => {
+    await apiLogout();
+    setUser(null);
+  }, []);
+
+  const value = useMemo<AuthContextType>(() => {
+    const hasRole = (...roles: Role[]) => Boolean(user && roles.includes(user.role));
+    return {
+      user,
+      isLoading,
+      isAuthenticated: Boolean(user),
+      mustChangePassword: Boolean(user?.must_change_password),
+      hasRole,
+      isOwner: hasRole("ADMIN"),
+      isManagement: hasRole("ADMIN", "HR"),
+      login,
+      signup,
+      changePassword,
+      refreshUser,
+      logout,
+    };
+  }, [user, isLoading, login, signup, changePassword, refreshUser, logout]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
+    throw new Error("useAuth must be used within AuthProvider");
   }
   return context;
 };

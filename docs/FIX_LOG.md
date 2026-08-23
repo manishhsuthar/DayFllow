@@ -28,26 +28,50 @@ Tracks every finding from [`SECURITY_AUDIT.md`](./SECURITY_AUDIT.md) from discov
 | V-20 | High | Payroll re-run erases the payment audit trail | 🟢 Fixed | payroll/audit | `V20PayrollRerunErasesPaymentAudit` |
 | V-21 | Low | `force_recompute` accepted and ignored | 🟢 Fixed | payroll/audit | `V21ForceRecomputeIgnored` |
 | V-22 | Medium | Insecure production defaults | 🟢 Fixed | security baseline | — |
-| V-23 | Medium | JWTs in localStorage; no rotation or revocation | 🔴 Open | — | — |
-| V-24 | Medium | Authorization enforced in UI, not API | 🔴 Open | — | — |
+| V-23 | Medium | JWTs in localStorage; no rotation or revocation | 🟢 Fixed | frontend | — | — |
+| V-24 | Medium | Authorization enforced in UI, not API | 🟢 Fixed | frontend | — | — |
 | V-25 | Low | Company config can orphan roles and departments | 🟢 Fixed | tenancy | — |
 | V-26 | Medium | Naive timezone handling corrupts day boundaries | 🟢 Fixed | attendance/leave | `V26TimezoneHandling` |
 | V-27 | High | No password reset; no email backend | 🟢 Fixed | tenancy | — |
 | V-28 | Low | `AllAttendance`/`AllLeaves` exclude ADMIN, unfiltered | 🟢 Fixed | attendance/leave | `V28UnboundedHistoryQueries` |
 | V-29 | Low | No pagination on any list endpoint | 🟢 Fixed | security baseline | — |
 | V-30 | Medium | No audit log for privileged or financial actions | 🟢 Fixed | payroll/audit | `V30AuditTrail` |
-| V-31 | Low | Electron opens DevTools in production builds | 🔴 Open | — | — |
-| V-32 | Low | Vite dev proxy disables TLS verification | 🔴 Open | — | — |
-| V-33 | Low | No Content-Security-Policy | 🔴 Open | — | — |
+| V-31 | Low | Electron opens DevTools in production builds | 🟢 Fixed | frontend | — | — |
+| V-32 | Low | Vite dev proxy disables TLS verification | 🟢 Fixed | frontend | — | — |
+| V-33 | Low | No Content-Security-Policy | 🟢 Fixed | frontend | — | — |
 | V-34 | Low | Repository hygiene; committed Razorpay secret | 🟡 Partial | billing | — |
 
 ## Progress
 
 | | Critical | High | Medium | Low | Total |
 |---|---|---|---|---|---|
-| Open | 0 | 0 | 2 | 2 | **4** |
+| Open | 0 | 0 | 0 | 0 | **0** |
 | Partial | 0 | 0 | 0 | 1 | **1** |
-| Fixed | 5 | 9 | 10 | 5 | **29** |
+| Fixed | 5 | 9 | 12 | 8 | **34** |
+
+### frontend — session handling, route guards, Stripe UI
+
+Fixed V-23, V-24, V-31, V-32, V-33.
+
+- **Identity comes from the server.** `AuthContext` calls `/api/auth/me/` on load instead of
+  hydrating `user` — role included — out of `localStorage`, where setting `{"role":"ADMIN"}`
+  used to reveal the entire admin interface. `RequireAuth` gates routes by role; `RoleGate`
+  hides actions. Both are defence in depth — the API enforces the same rules.
+- **Sessions refresh and revoke.** Access tokens are 15 minutes now, so the client refreshes on
+  401 with a single shared in-flight request (racing refreshes would invalidate each other under
+  rotation). Logout awaits the server call that blacklists the refresh token; it used to only
+  clear `localStorage`, leaving the session valid for up to a week.
+- The Admin/Employee toggle is gone from login. Making the user declare a role and then logging
+  them back out on a mismatch confirmed whether a given account was an admin.
+- New screens: Billing (plans, seats, Stripe portal), Expenses (submit and review claims), Audit
+  trail, Change password, Forgot password, Reset password. Pricing is fetched from the API in USD
+  rather than hardcoded rupee strings that disagreed with what the backend charged.
+- A CSP is set on the SPA, `frame-src` limited to Stripe's checkout and portal origins.
+- The Vite dev proxy no longer sets `secure: false`, which disabled TLS certificate verification
+  against the production backend, and it defaults to a local API instead of production.
+- The packaged Electron app no longer opens DevTools on every launch, and external `https://`
+  links open in the user's real browser instead of inside the app shell.
+- The WebSocket credential travels as a subprotocol rather than a query parameter.
 
 ### realtime — WebSocket credentials
 

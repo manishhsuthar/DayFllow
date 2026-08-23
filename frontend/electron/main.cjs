@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const windowStateKeeper = require('./utils/windowState.cjs');
@@ -58,19 +58,32 @@ function createMainWindow() {
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-    mainWindow.webContents.openDevTools();
+    // DevTools stay closed in packaged builds. They used to open on every launch
+    // of the shipped desktop app (audit V-31). Users can still open them from
+    // the View menu.
   }
 
-  // Prevent loading external pages directly (Security Best Practice)
+  // The renderer may only navigate within the bundled app. Anything else --
+  // including an https link in tenant-supplied content -- is opened in the
+  // user's real browser rather than inside the app shell.
+  const isInternalUrl = (url) =>
+    url.startsWith('file://') || (isDev && url.startsWith('http://localhost:8080'));
+
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    // Only allow local navigations and secure app origin
-    if (!url.startsWith('file://') && !url.startsWith('http://localhost:8080')) {
+    if (!isInternalUrl(url)) {
       event.preventDefault();
+      if (url.startsWith('https://')) {
+        shell.openExternal(url);
+      }
     }
   });
 
   // Secure new window creations (Security Best Practice)
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Stripe Checkout and the billing portal are external by design.
+    if (url.startsWith('https://')) {
+      shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 

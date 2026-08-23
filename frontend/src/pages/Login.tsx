@@ -5,7 +5,6 @@ import { AuthLayout } from '@/components/auth/AuthLayout';
 import { useToast } from '@/hooks/use-toast';
 import dayflowLogo from '@/assets/dayflow-logo.png';
 import { useAuth } from '@/contexts/AuthContext';
-import { Switch } from '@/components/ui/switch';
 import { fetchCompanyConfig } from '@/api/companyConfig';
 
 const Login: React.FC = () => {
@@ -13,21 +12,18 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
-  const [loginRole, setLoginRole] = useState<'EMP' | 'ADMIN'>('EMP');
   const [isLoading, setIsLoading] = useState(false);
-  const { login, logout } = useAuth();
+  const { login } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
   useEffect(() => {
     const savedLoginId = localStorage.getItem('savedLoginId');
-    const savedLoginRole = localStorage.getItem('savedLoginRole');
     if (savedLoginId) {
       setLoginId(savedLoginId);
     }
-    if (savedLoginRole === 'ADMIN' || savedLoginRole === 'EMP') {
-      setLoginRole(savedLoginRole);
-    }
+    // A stale role from the old Admin/Employee toggle is no longer meaningful.
+    localStorage.removeItem('savedLoginRole');
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -36,60 +32,46 @@ const Login: React.FC = () => {
 
     try {
       const user = await login(loginId, password);
-      
+
       if (rememberMe) {
         localStorage.setItem('savedLoginId', loginId);
-        localStorage.setItem('savedLoginRole', loginRole);
       } else {
         localStorage.removeItem('savedLoginId');
-        localStorage.removeItem('savedLoginRole');
       }
 
-      toast({
-        title: 'Welcome back!',
-        description: 'You have successfully logged in.',
-      });
-      const isAdmin = user?.role === 'ADMIN' || user?.role === 'HR';
+      // A temporary password blocks the entire API server-side, so there is
+      // nothing else worth rendering until it has been rotated (audit V-15).
+      if (user.must_change_password) {
+        navigate('/change-password', { replace: true });
+        return;
+      }
 
-      if (loginRole === 'ADMIN') {
-        if (!isAdmin) {
-          toast({
-            title: 'Access denied',
-            description: 'Your account is not an Admin account.',
-            variant: 'destructive',
-          });
-          logout();
-          return;
-        }
-        if (user?.role === 'ADMIN') {
-          try {
-            const config = await fetchCompanyConfig();
-            const isConfigured =
-              (config.departments?.length ?? 0) > 0 &&
-              (config.roles?.length ?? 0) > 0 &&
-              (config.employment_types?.length ?? 0) > 0;
-            if (!isConfigured) {
-              navigate('/company/setup');
-              return;
-            }
-          } catch {
-            navigate('/company/setup');
+      toast({ title: 'Welcome back', description: 'You are signed in.' });
+
+      // Where someone lands follows the role the *server* returned. The old
+      // version made the user pick Admin or Employee on this form and then
+      // logged them straight back out on a mismatch, which leaked whether a
+      // given account was an admin (audit V-24).
+      const isAdmin = user.role === 'ADMIN' || user.role === 'HR';
+
+      if (user.role === 'ADMIN') {
+        try {
+          const config = await fetchCompanyConfig();
+          const isConfigured =
+            (config.departments?.length ?? 0) > 0 &&
+            (config.roles?.length ?? 0) > 0 &&
+            (config.employment_types?.length ?? 0) > 0;
+          if (!isConfigured) {
+            navigate('/company/setup', { replace: true });
             return;
           }
-        }
-        navigate('/dashboard/admin');
-      } else {
-        if (isAdmin) {
-          toast({
-            title: 'Access denied',
-            description: 'Admin/HR accounts must login through Admin.',
-            variant: 'destructive',
-          });
-          logout();
+        } catch {
+          navigate('/company/setup', { replace: true });
           return;
         }
-        navigate('/dashboard/employee');
       }
+
+      navigate(isAdmin ? '/dashboard/admin' : '/dashboard/employee', { replace: true });
     } catch (error: any) {
       toast({
         title: 'Login failed',
@@ -173,32 +155,9 @@ const Login: React.FC = () => {
               />
               <span className="text-sm text-foreground">Remember me</span>
             </label>
-            <button type="button" className="text-sm text-primary hover:underline">
+            <Link to="/forgot-password" className="text-sm text-primary hover:underline">
               Forgot password?
-            </button>
-          </div>
-
-          {/* Login As Toggle */}
-          <div className="flex items-center justify-between rounded-xl border border-input px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-foreground">Login As</p>
-              <p className="text-xs text-muted-foreground">
-                {loginRole === 'ADMIN' ? 'Admin' : 'Employee'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-xs ${loginRole === 'EMP' ? 'text-foreground' : 'text-muted-foreground'}`}>
-                Employee
-              </span>
-              <Switch
-                checked={loginRole === 'ADMIN'}
-                onCheckedChange={(checked) => setLoginRole(checked ? 'ADMIN' : 'EMP')}
-                aria-label="Toggle admin login"
-              />
-              <span className={`text-xs ${loginRole === 'ADMIN' ? 'text-foreground' : 'text-muted-foreground'}`}>
-                Admin
-              </span>
-            </div>
+            </Link>
           </div>
 
           {/* Login Button */}

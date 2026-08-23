@@ -110,7 +110,9 @@ const CreateEmployee: React.FC = () => {
         date_of_joining: dateOfJoining,
         department: department || undefined,
         employment_type: role === 'HR' ? undefined : (employmentType || undefined),
-        salary: salary ? Number(salary) : undefined,
+        // Compensation is set from Payroll, by the organization owner, and is
+        // audited there. It is no longer part of creating an employee record,
+        // and the directory does not carry it at all (audit V-18).
       });
 
       setCreated({

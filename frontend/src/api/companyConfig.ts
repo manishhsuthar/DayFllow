@@ -1,25 +1,27 @@
 import { apiGet, apiPut } from "@/api/client";
 
-export interface CompanyConfig {
-  company_name: string;
+/** Company settings. Backed by the Organization model now, not CompanyConfig. */
+export interface OrganizationSettings {
+  name: string;
+  slug: string;
+  timezone: string;
+  logo_url: string;
   departments: string[];
   roles: Array<"EMP" | "INT" | "HR">;
   employment_types: string[];
-  logo_url: string;
-  bypass_attendance?: boolean;
+  bypass_attendance: boolean;
   updated_at: string | null;
 }
 
-export const fetchCompanyConfig = async () => {
-  return apiGet("/accounts/company-config/") as Promise<CompanyConfig>;
-};
+export const fetchCompanyConfig = () =>
+  apiGet("/accounts/company-config/") as Promise<OrganizationSettings>;
 
-export const saveCompanyConfig = async (payload: {
-  departments: string[];
-  roles: string[];
-  employment_types: string[];
-  logo_url: string;
-  bypass_attendance?: boolean;
-}) => {
-  return apiPut("/accounts/company-config/", payload) as Promise<CompanyConfig>;
-};
+/**
+ * Partial update. The server rejects removing a role or department that active
+ * employees still hold (audit V-25), and requires an https logo URL (audit V-09).
+ */
+export const saveCompanyConfig = (payload: Partial<OrganizationSettings>) =>
+  apiPut("/accounts/company-config/", payload) as Promise<OrganizationSettings>;
+
+/** Kept as an alias so existing imports keep resolving. */
+export type CompanyConfig = OrganizationSettings;

@@ -2,7 +2,10 @@ import React from 'react';
 import { Header } from '@/components/layout/Header';
 import { AvatarWithBadge } from '@/components/Avatar';
 import { Mail, User, Briefcase, Building2, Calendar, Clock, Wallet } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
+import { fetchSalaryRecords } from '@/api/payroll';
+import { formatAmount } from '@/api/billing';
 
 const roleLabel = (role?: 'ADMIN' | 'HR' | 'EMP' | 'INT') => {
   if (role === 'ADMIN') return 'Admin';
@@ -25,12 +28,15 @@ const EmployeeProfile: React.FC = () => {
       year: 'numeric',
     })
     : '--';
-  const formattedSalary = (() => {
-    if (user?.salary === null || user?.salary === undefined || user?.salary === '') return '--';
-    const numeric = typeof user.salary === 'number' ? user.salary : Number(user.salary);
-    if (Number.isNaN(numeric)) return '--';
-    return numeric.toLocaleString('en-IN', { style: 'currency', currency: 'INR' });
-  })();
+  // Salary is served by the payroll endpoint now, in USD. It used to live on the
+  // user object and be handed to every colleague in the directory (audit V-18).
+  const { data: salaryRecords } = useQuery({
+    queryKey: ['my-salary'],
+    queryFn: fetchSalaryRecords,
+    retry: false,
+  });
+  const mySalary = salaryRecords?.[0];
+  const formattedSalary = mySalary ? formatAmount(mySalary.monthly_salary) : '--';
 
   return (
     <div className="min-h-screen bg-background">

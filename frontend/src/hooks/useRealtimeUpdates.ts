@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { getRealtimeWebSocketUrl } from "@/api/client";
+import { getRealtimeSubprotocol, getRealtimeWebSocketUrl } from "@/api/client";
 import { useAuth } from "@/contexts/AuthContext";
 
 export const REALTIME_DATA_CHANGED_EVENT = "dayflow:data-changed";
@@ -33,7 +33,12 @@ export const useRealtimeUpdates = () => {
         return;
       }
 
-      const socket = new WebSocket(socketUrl);
+      // The credential travels as a subprotocol rather than a query parameter,
+      // which kept it out of access logs and browser history (audit V-12).
+      const subprotocol = getRealtimeSubprotocol();
+      const socket = subprotocol
+        ? new WebSocket(socketUrl, subprotocol)
+        : new WebSocket(socketUrl);
       socketRef.current = socket;
 
       socket.onopen = () => {
