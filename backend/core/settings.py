@@ -14,6 +14,7 @@ from pathlib import Path
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
+os.getenv("DJANGO_CORS_ALLOWED_ORIGINS") #Remove in produciton
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
